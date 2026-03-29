@@ -10,6 +10,12 @@ import {
 } from "discord.js";
 import dotenv from "dotenv";
 import {
+  handleClassButton,
+  isClassFeatureEnabled,
+  registerClassMemberUpdate,
+  sendWelcomeClassPrompt,
+} from "./classSelect.js";
+import {
   handleClearSurvey,
   handleGuildBosses,
   handlePing,
@@ -176,6 +182,8 @@ async function main(): Promise<void> {
     ],
   });
 
+  registerClassMemberUpdate(client);
+
   client.once(Events.ClientReady, async (c) => {
     console.log(`Бот запущен: ${c.user.tag}`);
     loadWelcomeMessageTemplate();
@@ -207,14 +215,26 @@ async function main(): Promise<void> {
         allowedMentions: { users: [member.id] },
       });
       console.log(`[welcome] ${name} (${member.id}) — сообщение в ${welcomeChannelId}`);
+
+      if (isClassFeatureEnabled()) {
+        await sendWelcomeClassPrompt(member, ch);
+      }
     } catch (e) {
       console.error("[welcome] Не удалось отправить приветствие:", e);
     }
   });
 
   client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
     try {
+      if (interaction.isButton()) {
+        if (interaction.customId.startsWith("class:")) {
+          await handleClassButton(interaction);
+        }
+        return;
+      }
+
+      if (!interaction.isChatInputCommand()) return;
+
       if (interaction.commandName === "ping") {
         await handlePing(interaction);
       } else if (interaction.commandName === "guild_bosses") {
@@ -224,6 +244,7 @@ async function main(): Promise<void> {
       }
     } catch (err) {
       console.error("[interaction]", err);
+      if (!interaction.isRepliable()) return;
       const payload = {
         content: "Произошла ошибка при выполнении команды.",
         flags: MessageFlagsBitField.Flags.Ephemeral,
