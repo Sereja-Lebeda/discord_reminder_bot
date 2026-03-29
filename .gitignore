@@ -7,3 +7,4 @@ data/pending-deletions.json
 # Привязки userId → messageId для лога классов (данные участников)
 config/class-user-messages.json
 config/class-welcome-prompts.json
+config/class-stats-message.json

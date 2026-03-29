@@ -9,11 +9,13 @@ import {
   type GuildMember,
 } from "discord.js";
 import dotenv from "dotenv";
+import { refreshClassStatsMessageWithMemberSync } from "./classStats.js";
 import {
   handleClassButton,
   handleClassSlashCommand,
   isClassFeatureEnabled,
   registerClassMemberUpdate,
+  registerGuildMemberRemoveForClass,
   sendWelcomeClassPrompt,
 } from "./classSelect.js";
 import {
@@ -184,6 +186,7 @@ async function main(): Promise<void> {
   });
 
   registerClassMemberUpdate(client);
+  registerGuildMemberRemoveForClass(client);
 
   client.once(Events.ClientReady, async (c) => {
     console.log(`Бот запущен: ${c.user.tag}`);
@@ -191,6 +194,16 @@ async function main(): Promise<void> {
     restorePendingDeletions(client);
     startCronFromConfig(client);
     await registerGuildSlashCommands(client);
+
+    const guildId = process.env.GUILD_ID?.trim();
+    if (guildId && process.env.CLASS_LOG_CHANNEL_ID?.trim()) {
+      try {
+        const guild = await c.guilds.fetch(guildId);
+        await refreshClassStatsMessageWithMemberSync(c, guild);
+      } catch (e) {
+        console.error("[class-stats] Не удалось обновить сводку при старте:", e);
+      }
+    }
   });
 
   client.on(Events.GuildMemberAdd, async (member) => {

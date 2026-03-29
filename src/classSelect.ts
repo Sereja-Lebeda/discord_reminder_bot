@@ -13,6 +13,10 @@ import {
 } from "discord.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  refreshClassStatsMessage,
+  refreshClassStatsMessageWithMemberSync,
+} from "./classStats.js";
 
 const USER_MESSAGES_PATH = join(
   process.cwd(),
@@ -275,7 +279,8 @@ function parseClassButtonCustomId(
   return { targetUserId, kind };
 }
 
-async function deleteWelcomePromptMessage(
+/** Удаляет второе сообщение с кнопками в приветствии и снимает запись из файла. */
+export async function deleteWelcomePromptMessage(
   client: Client,
   userId: string,
 ): Promise<void> {
@@ -362,6 +367,11 @@ export async function applyClassForMember(
     await upsertClassLogMessage(client, member.id, line, kind, logCh);
     if (options.deleteWelcomePrompt) {
       await deleteWelcomePromptMessage(client, member.id);
+    }
+    try {
+      await refreshClassStatsMessage(client, member.guild);
+    } catch (e) {
+      console.error("[class-stats] Не удалось обновить сводку:", e);
     }
     return { ok: true, label, protectedUser };
   } catch (e) {
@@ -522,5 +532,50 @@ export async function handleClassMemberDisplayNameUpdate(
 export function registerClassMemberUpdate(client: Client): void {
   client.on(Events.GuildMemberUpdate, (oldM, newM) => {
     void handleClassMemberDisplayNameUpdate(oldM, newM);
+  });
+}
+
+async function removeUserLogLineOnLeave(
+  client: Client,
+  userId: string,
+): Promise<void> {
+  const map = loadUserMessageMap();
+  const entry = map[userId];
+  if (!entry) return;
+  try {
+    const ch = await client.channels.fetch(entry.channelId);
+    if (ch?.isSendable()) {
+      const msg = await ch.messages.fetch(entry.messageId);
+      await msg.delete();
+    }
+  } catch (e) {
+    console.warn("[class] Не удалось удалить строку лога при выходе:", e);
+  }
+  delete map[userId];
+  saveUserMessageMap(map);
+}
+
+async function handleGuildMemberLeaveForClass(
+  client: Client,
+  member: GuildMember | PartialGuildMember,
+): Promise<void> {
+  if (!isClassFeatureEnabled()) return;
+  const guildId = process.env.GUILD_ID?.trim();
+  if (guildId && member.guild.id !== guildId) return;
+
+  await removeUserLogLineOnLeave(client, member.id);
+  await deleteWelcomePromptMessage(client, member.id);
+
+  try {
+    await refreshClassStatsMessageWithMemberSync(client, member.guild);
+  } catch (e) {
+    console.error("[class-stats] Не удалось обновить сводку после выхода:", e);
+  }
+  console.log(`[class] Пользователь ${member.id} вышел — лог очищен, сводка пересчитана.`);
+}
+
+export function registerGuildMemberRemoveForClass(client: Client): void {
+  client.on(Events.GuildMemberRemove, (member) => {
+    void handleGuildMemberLeaveForClass(client, member);
   });
 }
