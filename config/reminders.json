@@ -1,0 +1,41 @@
+{
+  "timezone": "Europe/Moscow",
+  "jobs": [
+    {
+      "id": "preReminderGuildParty",
+      "cron": "45 19 * * *",
+      "message": "Через 15 минут начинается вечеринка гильдии!",
+      "deleteAfterMinutes": 20
+    },
+    {
+      "id": "reminderGuildParty",
+      "cron": "0 20 * * *",
+      "message": "🔥 Началась вечеринка гильдии!\nНе забывайте присоединиться и провести время вместе с согильдийцами 🎉",
+      "deleteAfterMinutes": 20
+    },
+    {
+      "id": "preSkillsReminder",
+      "cron": "45 18 * * 3,6",
+      "message": "Через 15 минут начинается проверка навыков!",
+      "deleteAfterMinutes": 20
+    },
+    {
+      "id": "skillsReminder",
+      "cron": "0 19 * * 3,6",
+      "message": "⚔️ Началась проверка навыков!\nПриходите на арену и покажите, на что вы способны 🏹",
+      "deleteAfterMinutes": 60
+    },
+    {
+      "id": "preReminderBreakingArmy",
+      "cron": "45 19 * * 2,5",
+      "message": "Через 15 минут начинается Breaking Army!",
+      "deleteAfterMinutes": 20
+    },
+    {
+      "id": "reminderBreakingArmy",
+      "cron": "0 20 * * 2,5",
+      "message": "🐉 Breaking Army начался!\nПора показать боссу, кто здесь настоящий хозяин поля боя ⚔️",
+      "deleteAfterMinutes": 120
+    }
+  ]
+}
