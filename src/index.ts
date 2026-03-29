@@ -6,6 +6,7 @@ import {
   Events,
   GatewayIntentBits,
   MessageFlagsBitField,
+  type GuildMember,
 } from "discord.js";
 import dotenv from "dotenv";
 import {
@@ -33,10 +34,37 @@ interface RemindersConfig {
 }
 
 const CONFIG_PATH = join(process.cwd(), "config", "reminders.json");
+const WELCOME_CONFIG_PATH = join(process.cwd(), "config", "welcome.json");
 
 function loadRemindersConfig(): RemindersConfig {
   const raw = readFileSync(CONFIG_PATH, "utf-8");
   return JSON.parse(raw) as RemindersConfig;
+}
+
+/** Текст из `config/welcome.json`; пустая строка = приветствие отключено до исправления файла */
+let welcomeMessageTemplate = "";
+
+function loadWelcomeMessageTemplate(): void {
+  try {
+    const raw = readFileSync(WELCOME_CONFIG_PATH, "utf-8");
+    const data = JSON.parse(raw) as { message?: string };
+    const msg = data.message?.trim();
+    if (!msg) {
+      console.warn("[welcome] В welcome.json пустое поле message.");
+      welcomeMessageTemplate = "";
+      return;
+    }
+    welcomeMessageTemplate = msg;
+  } catch (e) {
+    console.error("[welcome] Не удалось прочитать config/welcome.json:", e);
+    welcomeMessageTemplate = "";
+  }
+}
+
+function buildWelcomeContent(template: string, member: GuildMember): string {
+  return template
+    .replaceAll("{user}", member.toString())
+    .replaceAll("{guild}", member.guild.name);
 }
 
 let botClient: Client | null = null;
@@ -83,9 +111,9 @@ function startCronFromConfig(client: Client): void {
   stopAllCronJobs();
   botClient = client;
 
-  const channelId = process.env.CHANNEL_ID;
+  const channelId = process.env.REMINDER_CHANNEL_ID?.trim();
   if (!channelId) {
-    console.error("В .env не задан CHANNEL_ID.");
+    console.error("В .env не задан REMINDER_CHANNEL_ID (канал для напоминаний по расписанию).");
     return;
   }
 
@@ -141,14 +169,47 @@ async function main(): Promise<void> {
   }
 
   const client = new Client({
-    intents: [GatewayIntentBits.Guilds],
+    intents: [
+      GatewayIntentBits.Guilds,
+      /** Нужен для события `guildMemberAdd` (новый участник). Включи «Server Members Intent» в Developer Portal → Bot. */
+      GatewayIntentBits.GuildMembers,
+    ],
   });
 
   client.once(Events.ClientReady, async (c) => {
     console.log(`Бот запущен: ${c.user.tag}`);
+    loadWelcomeMessageTemplate();
     restorePendingDeletions(client);
     startCronFromConfig(client);
     await registerGuildSlashCommands(client);
+  });
+
+  client.on(Events.GuildMemberAdd, async (member) => {
+    const welcomeChannelId = process.env.WELCOME_CHANNEL_ID?.trim();
+    if (!welcomeChannelId) {
+      console.warn("[welcome] WELCOME_CHANNEL_ID не задан — приветствие не отправлено.");
+      return;
+    }
+    try {
+      if (!welcomeMessageTemplate) {
+        console.warn("[welcome] Шаблон пуст — проверь config/welcome.json.");
+        return;
+      }
+      const ch = await client.channels.fetch(welcomeChannelId);
+      if (!ch?.isSendable()) {
+        console.error(`[welcome] Канал ${welcomeChannelId} недоступен для отправки.`);
+        return;
+      }
+      const name = member.displayName || member.user.username;
+      const content = buildWelcomeContent(welcomeMessageTemplate, member);
+      await ch.send({
+        content,
+        allowedMentions: { users: [member.id] },
+      });
+      console.log(`[welcome] ${name} (${member.id}) — сообщение в ${welcomeChannelId}`);
+    } catch (e) {
+      console.error("[welcome] Не удалось отправить приветствие:", e);
+    }
   });
 
   client.on("interactionCreate", async (interaction) => {
@@ -182,6 +243,11 @@ async function main(): Promise<void> {
     } catch (e) {
       console.error(e);
     }
+  });
+
+  watchFile(WELCOME_CONFIG_PATH, { interval: 2000 }, () => {
+    console.log("[config] welcome.json изменён — перезагрузка текста приветствия.");
+    loadWelcomeMessageTemplate();
   });
 
   await client.login(token);
