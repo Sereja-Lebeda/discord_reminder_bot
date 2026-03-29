@@ -11,6 +11,7 @@ import {
 import dotenv from "dotenv";
 import {
   handleClassButton,
+  handleClassSlashCommand,
   isClassFeatureEnabled,
   registerClassMemberUpdate,
   sendWelcomeClassPrompt,
@@ -241,6 +242,8 @@ async function main(): Promise<void> {
         await handleGuildBosses(interaction);
       } else if (interaction.commandName === "clear_survey") {
         await handleClearSurvey(interaction);
+      } else if (interaction.commandName === "class") {
+        await handleClassSlashCommand(interaction);
       }
     } catch (err) {
       console.error("[interaction]", err);

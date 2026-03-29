@@ -5,6 +5,7 @@ import {
   Events,
   MessageFlagsBitField,
   type ButtonInteraction,
+  type ChatInputCommandInteraction,
   type Client,
   type GuildMember,
   type PartialGuildMember,
@@ -13,8 +14,16 @@ import {
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const USER_MESSAGES_PATH = join(process.cwd(), "config", "class-user-messages.json");
-const WELCOME_PROMPTS_PATH = join(process.cwd(), "config", "class-welcome-prompts.json");
+const USER_MESSAGES_PATH = join(
+  process.cwd(),
+  "config",
+  "class-user-messages.json",
+);
+const WELCOME_PROMPTS_PATH = join(
+  process.cwd(),
+  "config",
+  "class-welcome-prompts.json",
+);
 
 export const CLASS_BUTTON_PREFIX = "class:" as const;
 
@@ -36,8 +45,8 @@ function envRoleIds(): Record<ClassKind, string | undefined> {
 
 function roleIdsFromEnv(): string[] {
   const ids = envRoleIds();
-  return [ids.tank, ids.healer, ids.damager].filter(
-    (id): id is string => Boolean(id)
+  return [ids.tank, ids.healer, ids.damager].filter((id): id is string =>
+    Boolean(id),
   );
 }
 
@@ -54,7 +63,9 @@ function getLogChannelId(): string | null {
 function loadWelcomePromptMap(): Record<string, UserMessageEntry> {
   try {
     const raw = readFileSync(WELCOME_PROMPTS_PATH, "utf-8");
-    const data = JSON.parse(raw) as { entries?: Record<string, UserMessageEntry> };
+    const data = JSON.parse(raw) as {
+      entries?: Record<string, UserMessageEntry>;
+    };
     return data.entries && typeof data.entries === "object" ? data.entries : {};
   } catch {
     return {};
@@ -65,11 +76,14 @@ function saveWelcomePromptMap(map: Record<string, UserMessageEntry>): void {
   writeFileSync(
     WELCOME_PROMPTS_PATH,
     `${JSON.stringify({ entries: map }, null, 2)}\n`,
-    "utf-8"
+    "utf-8",
   );
 }
 
-function setWelcomePromptForUser(userId: string, entry: UserMessageEntry): void {
+function setWelcomePromptForUser(
+  userId: string,
+  entry: UserMessageEntry,
+): void {
   const map = loadWelcomePromptMap();
   map[userId] = entry;
   saveWelcomePromptMap(map);
@@ -82,12 +96,52 @@ function clearWelcomePromptForUser(userId: string): void {
   saveWelcomePromptMap(map);
 }
 
-export type UserMessageEntry = { messageId: string; channelId: string };
+export type UserMessageEntry = {
+  messageId: string;
+  channelId: string;
+  /** Для строки лога при смене ника, если игровые роли не выданы (например модераторы). */
+  classKind?: ClassKind;
+};
+
+function protectedRoleIdsFromEnv(): string[] {
+  const raw = process.env.CLASS_PROTECTED_ROLE_IDS?.trim();
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** Доп. user ID (через запятую), если нужно вручную — владелец определяется автоматически. */
+function protectedUserIdsFromEnv(): string[] {
+  const raw = process.env.CLASS_PROTECTED_USER_IDS?.trim();
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Участник «защищён»: только строка в логе, игровые роли Танк/Хиллер/Дамаггер не трогаем.
+ * — владелец сервера (ownerId, роль не нужна);
+ * — ID из CLASS_PROTECTED_USER_IDS;
+ * — любая роль из CLASS_PROTECTED_ROLE_IDS.
+ */
+export function memberHasProtectedRole(member: GuildMember): boolean {
+  if (member.id === member.guild.ownerId) return true;
+  if (protectedUserIdsFromEnv().includes(member.id)) return true;
+  const roleIds = protectedRoleIdsFromEnv();
+  if (roleIds.length === 0) return false;
+  return member.roles.cache.some((r) => roleIds.includes(r.id));
+}
 
 function loadUserMessageMap(): Record<string, UserMessageEntry> {
   try {
     const raw = readFileSync(USER_MESSAGES_PATH, "utf-8");
-    const data = JSON.parse(raw) as { entries?: Record<string, UserMessageEntry> };
+    const data = JSON.parse(raw) as {
+      entries?: Record<string, UserMessageEntry>;
+    };
     return data.entries && typeof data.entries === "object" ? data.entries : {};
   } catch {
     return {};
@@ -98,8 +152,60 @@ function saveUserMessageMap(map: Record<string, UserMessageEntry>): void {
   writeFileSync(
     USER_MESSAGES_PATH,
     `${JSON.stringify({ entries: map }, null, 2)}\n`,
-    "utf-8"
+    "utf-8",
   );
+}
+
+/**
+ * Сначала правим существующую строку лога. В Discord у ботов нет «срока годности» редактирования
+ * как в Telegram, но edit может упасть (сообщение удалено, нет прав). Тогда удаляем старое
+ * при возможности и отправляем новое в канал лога.
+ */
+async function upsertClassLogMessage(
+  client: Client,
+  userId: string,
+  line: string,
+  kind: ClassKind,
+  logCh: SendableChannels,
+): Promise<void> {
+  const map = loadUserMessageMap();
+  const existing = map[userId];
+
+  if (existing) {
+    const ch = await client.channels.fetch(existing.channelId);
+    if (ch?.isSendable()) {
+      try {
+        const msg = await ch.messages.fetch(existing.messageId);
+        await msg.edit({ content: line });
+        map[userId] = {
+          messageId: existing.messageId,
+          channelId: existing.channelId,
+          classKind: kind,
+        };
+        saveUserMessageMap(map);
+        return;
+      } catch (e) {
+        console.warn(
+          "[class] Редактирование лога не удалось — удаляю старое сообщение и создаю новое:",
+          e,
+        );
+        try {
+          const stale = await ch.messages.fetch(existing.messageId);
+          await stale.delete();
+        } catch {
+          /* уже удалено или недоступно */
+        }
+      }
+    }
+  }
+
+  const msg = await logCh.send({ content: line });
+  map[userId] = {
+    messageId: msg.id,
+    channelId: logCh.id,
+    classKind: kind,
+  };
+  saveUserMessageMap(map);
 }
 
 function buildLogLine(member: GuildMember, classLabel: string): string {
@@ -113,7 +219,9 @@ function parseClass(kind: string): ClassKind | null {
 }
 
 /** Кнопки привязаны к userId, чтобы нельзя было нажать чужой выбор в общем канале. */
-function buildClassRowForMember(targetUserId: string): ActionRowBuilder<ButtonBuilder> {
+function buildClassRowForMember(
+  targetUserId: string,
+): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(`${CLASS_BUTTON_PREFIX}${targetUserId}:tank`)
@@ -126,7 +234,7 @@ function buildClassRowForMember(targetUserId: string): ActionRowBuilder<ButtonBu
     new ButtonBuilder()
       .setCustomId(`${CLASS_BUTTON_PREFIX}${targetUserId}:damager`)
       .setLabel(LABELS.damager)
-      .setStyle(ButtonStyle.Secondary)
+      .setStyle(ButtonStyle.Secondary),
   );
 }
 
@@ -135,7 +243,7 @@ function buildClassRowForMember(targetUserId: string): ActionRowBuilder<ButtonBu
  */
 export async function sendWelcomeClassPrompt(
   member: GuildMember,
-  welcomeChannel: SendableChannels
+  welcomeChannel: SendableChannels,
 ): Promise<void> {
   if (!isClassFeatureEnabled()) return;
 
@@ -155,7 +263,7 @@ export async function sendWelcomeClassPrompt(
 
 /** Разбор `class:<snowflake>:tank|healer|damager` */
 function parseClassButtonCustomId(
-  customId: string
+  customId: string,
 ): { targetUserId: string; kind: ClassKind } | null {
   if (!customId.startsWith(CLASS_BUTTON_PREFIX)) return null;
   const rest = customId.slice(CLASS_BUTTON_PREFIX.length);
@@ -167,7 +275,10 @@ function parseClassButtonCustomId(
   return { targetUserId, kind };
 }
 
-async function deleteWelcomePromptMessage(client: Client, userId: string): Promise<void> {
+async function deleteWelcomePromptMessage(
+  client: Client,
+  userId: string,
+): Promise<void> {
   const map = loadWelcomePromptMap();
   const entry = map[userId];
   if (!entry) return;
@@ -183,7 +294,137 @@ async function deleteWelcomePromptMessage(client: Client, userId: string): Promi
   clearWelcomePromptForUser(userId);
 }
 
-export async function handleClassButton(interaction: ButtonInteraction): Promise<void> {
+export type ApplyClassResult =
+  | { ok: true; label: string; protectedUser: boolean }
+  | { ok: false; userMessage: string };
+
+/**
+ * Обновляет игровые роли (если не «защищённая» роль) и строку в логе; сохраняет classKind для смены ника.
+ */
+export async function applyClassForMember(
+  member: GuildMember,
+  kind: ClassKind,
+  client: Client,
+  options: { deleteWelcomePrompt: boolean },
+): Promise<ApplyClassResult> {
+  if (!isClassFeatureEnabled()) {
+    return {
+      ok: false,
+      userMessage:
+        "Выбор класса не настроен (CLASS_LOG_CHANNEL_ID / ROLE_*_ID).",
+    };
+  }
+
+  const logChannelId = getLogChannelId();
+  const ids = envRoleIds();
+  const selectedRoleId = ids[kind];
+  if (!logChannelId || !selectedRoleId) {
+    return {
+      ok: false,
+      userMessage:
+        "Выбор класса не настроен (CLASS_LOG_CHANNEL_ID / ROLE_*_ID).",
+    };
+  }
+
+  const label = LABELS[kind];
+  const protectedUser = memberHasProtectedRole(member);
+  const allClassRoleIds = roleIdsFromEnv();
+
+  if (!protectedUser) {
+    try {
+      const toRemove = member.roles.cache.filter((r) =>
+        allClassRoleIds.includes(r.id),
+      );
+      if (toRemove.size > 0) {
+        await member.roles.remove(toRemove);
+      }
+      await member.roles.add(selectedRoleId);
+    } catch (e) {
+      console.error("[class] Не удалось выдать роли:", e);
+      return {
+        ok: false,
+        userMessage:
+          "Не удалось выдать роль. Проверь: роль бота выше Танк/Хиллер/Дамаггер, у бота есть «Управлять ролями».",
+      };
+    }
+  }
+
+  const line = buildLogLine(member, label);
+  const logCh = await client.channels.fetch(logChannelId);
+  if (!logCh?.isSendable()) {
+    return {
+      ok: false,
+      userMessage: "Канал лога недоступен для записи.",
+    };
+  }
+
+  try {
+    await upsertClassLogMessage(client, member.id, line, kind, logCh);
+    if (options.deleteWelcomePrompt) {
+      await deleteWelcomePromptMessage(client, member.id);
+    }
+    return { ok: true, label, protectedUser };
+  } catch (e) {
+    console.error("[class] Ошибка лога:", e);
+    return {
+      ok: false,
+      userMessage: "Не удалось записать или обновить строку в логе.",
+    };
+  }
+}
+
+export async function handleClassSlashCommand(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  if (!interaction.guild || !interaction.member) {
+    await interaction.reply({
+      content: "Эту команду можно использовать только на сервере.",
+      flags: MessageFlagsBitField.Flags.Ephemeral,
+    });
+    return;
+  }
+
+  const raw = interaction.options.getString("class", true);
+  const kind = parseClass(raw);
+  if (!kind) {
+    await interaction.reply({
+      content: "Неверный класс.",
+      flags: MessageFlagsBitField.Flags.Ephemeral,
+    });
+    return;
+  }
+
+  if (!isClassFeatureEnabled()) {
+    await interaction.reply({
+      content: "Выбор класса не настроен на боте.",
+      flags: MessageFlagsBitField.Flags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlagsBitField.Flags.Ephemeral });
+
+  const member = await interaction.guild.members.fetch(interaction.user.id);
+  const result = await applyClassForMember(member, kind, interaction.client, {
+    deleteWelcomePrompt: false,
+  });
+
+  if (!result.ok) {
+    await interaction.editReply({ content: result.userMessage });
+    return;
+  }
+
+  const staffNote = result.protectedUser
+    ? "Игровые роли не менялись (у тебя роль модератора/админа из списка защищённых). "
+    : "Игровая роль на сервере обновлена. ";
+  await interaction.editReply({
+    content: `${staffNote}Строка в логе классов обновлена: «${result.label}».`,
+  });
+}
+
+export async function handleClassButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
   if (!interaction.customId.startsWith(CLASS_BUTTON_PREFIX)) return;
 
   const parsed = parseClassButtonCustomId(interaction.customId);
@@ -207,18 +448,8 @@ export async function handleClassButton(interaction: ButtonInteraction): Promise
 
   if (interaction.user.id !== targetUserId) {
     await interaction.reply({
-      content: "Это приглашение выбрать класс не для тебя — нажми кнопки под своим сообщением.",
-      flags: MessageFlagsBitField.Flags.Ephemeral,
-    });
-    return;
-  }
-
-  const logChannelId = getLogChannelId();
-  const ids = envRoleIds();
-  const selectedRoleId = ids[kind];
-  if (!logChannelId || !selectedRoleId) {
-    await interaction.reply({
-      content: "Выбор класса не настроен на боте (CLASS_LOG_CHANNEL_ID / роли).",
+      content:
+        "Это приглашение выбрать класс не для тебя — нажми кнопки под своим сообщением.",
       flags: MessageFlagsBitField.Flags.Ephemeral,
     });
     return;
@@ -227,75 +458,26 @@ export async function handleClassButton(interaction: ButtonInteraction): Promise
   await interaction.deferReply({ flags: MessageFlagsBitField.Flags.Ephemeral });
 
   const member = await interaction.guild.members.fetch(interaction.user.id);
-  const allClassRoleIds = roleIdsFromEnv();
+  const result = await applyClassForMember(member, kind, interaction.client, {
+    deleteWelcomePrompt: true,
+  });
 
-  try {
-    const toRemove = member.roles.cache.filter((r) => allClassRoleIds.includes(r.id));
-    if (toRemove.size > 0) {
-      await member.roles.remove(toRemove);
-    }
-    await member.roles.add(selectedRoleId);
-  } catch (e) {
-    console.error("[class] Не удалось выдать роли:", e);
-    await interaction.editReply({
-      content:
-        "Не удалось выдать роль. Проверь: роль бота выше Танк/Хиллер/Дамаггер, у бота есть «Управлять ролями».",
-    });
+  if (!result.ok) {
+    await interaction.editReply({ content: result.userMessage });
     return;
   }
 
-  const label = LABELS[kind];
-  const line = buildLogLine(member, label);
-
-  const logCh = await interaction.client.channels.fetch(logChannelId);
-  if (!logCh?.isSendable()) {
-    await deleteWelcomePromptMessage(interaction.client, member.id);
-    await interaction.editReply({
-      content: `Роль «${label}» выдана, но канал лога недоступен. Сообщение с выбором в приветствии убрано.`,
-    });
-    return;
-  }
-
-  let map = loadUserMessageMap();
-  const existing = map[member.id];
-
-  try {
-    if (existing) {
-      const existingCh = await interaction.client.channels.fetch(existing.channelId);
-      if (existingCh?.isSendable()) {
-        try {
-          const msg = await existingCh.messages.fetch(existing.messageId);
-          await msg.edit({ content: line });
-          await deleteWelcomePromptMessage(interaction.client, member.id);
-          await interaction.editReply({
-            content: `Роль «${label}» установлена. Запись в логе обновлена. Сообщение с выбором в канале приветствия удалено.`,
-          });
-          return;
-        } catch {
-          /* сообщение удалено — создаём новое */
-        }
-      }
-    }
-
-    const msg = await logCh.send({ content: line });
-    map = { ...map, [member.id]: { messageId: msg.id, channelId: logCh.id } };
-    saveUserMessageMap(map);
-    await deleteWelcomePromptMessage(interaction.client, member.id);
-    await interaction.editReply({
-      content: `Роль «${label}» установлена. Строка добавлена в лог. Сообщение с выбором в канале приветствия удалено.`,
-    });
-  } catch (e) {
-    console.error("[class] Ошибка лога:", e);
-    await deleteWelcomePromptMessage(interaction.client, member.id);
-    await interaction.editReply({
-      content: `Роль «${label}» выдана, но не удалось записать в лог. Сообщение с выбором в приветствии убрано.`,
-    });
-  }
+  const extra = result.protectedUser
+    ? " Игровые роли не менялись (роль модератора/админа в списке защищённых)."
+    : "";
+  await interaction.editReply({
+    content: `«${result.label}» записано в лог.${extra} Сообщение с выбором в приветствии удалено.`,
+  });
 }
 
 export async function handleClassMemberDisplayNameUpdate(
   oldMember: GuildMember | PartialGuildMember,
-  newMember: GuildMember | PartialGuildMember
+  newMember: GuildMember | PartialGuildMember,
 ): Promise<void> {
   if (!isClassFeatureEnabled()) return;
 
@@ -310,22 +492,27 @@ export async function handleClassMemberDisplayNameUpdate(
   const entry = map[member.id];
   if (!entry) return;
 
-  const hasClassRole = roleIdsFromEnv().some((id) => member.roles.cache.has(id));
-  if (!hasClassRole) return;
-
-  const kind = (["tank", "healer", "damager"] as const).find((k) =>
-    member.roles.cache.has(envRoleIds()[k] ?? "")
-  );
+  let kind: ClassKind | undefined = entry.classKind;
+  if (!kind) {
+    const hasClassRole = roleIdsFromEnv().some((id) =>
+      member.roles.cache.has(id),
+    );
+    if (!hasClassRole) return;
+    kind = (["tank", "healer", "damager"] as const).find((k) =>
+      member.roles.cache.has(envRoleIds()[k] ?? ""),
+    );
+  }
   if (!kind) return;
 
-  const label = LABELS[kind];
-  const line = buildLogLine(member, label);
+  const line = buildLogLine(member, LABELS[kind]);
+
+  const logChannelId = getLogChannelId();
+  if (!logChannelId) return;
+  const logCh = await member.client.channels.fetch(logChannelId);
+  if (!logCh?.isSendable()) return;
 
   try {
-    const ch = await member.client.channels.fetch(entry.channelId);
-    if (!ch?.isSendable()) return;
-    const msg = await ch.messages.fetch(entry.messageId);
-    await msg.edit({ content: line });
+    await upsertClassLogMessage(member.client, member.id, line, kind, logCh);
     console.log(`[class] Лог обновлён после смены ника: ${member.id}`);
   } catch (e) {
     console.error("[class] Не удалось обновить лог при смене ника:", e);
