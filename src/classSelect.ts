@@ -412,9 +412,19 @@ export async function handleClassSlashCommand(
     return;
   }
 
-  await interaction.deferReply({ flags: MessageFlagsBitField.Flags.Ephemeral });
+  try {
+    await interaction.deferReply({ flags: MessageFlagsBitField.Flags.Ephemeral });
+  } catch (err: any) {
+    if (err?.code === 10062) {
+      console.warn(
+        `[classSelect] Interaction ${interaction.id} истёк до deferReply — пользователь не получит ответ.`,
+      );
+      return;
+    }
+    throw err;
+  }
 
-  const member = await interaction.guild.members.fetch(interaction.user.id);
+  const member = interaction.member as GuildMember;
   const result = await applyClassForMember(member, kind, interaction.client, {
     deleteWelcomePrompt: false,
   });
@@ -465,9 +475,19 @@ export async function handleClassButton(
     return;
   }
 
-  await interaction.deferReply({ flags: MessageFlagsBitField.Flags.Ephemeral });
+  try {
+    await interaction.deferReply({ flags: MessageFlagsBitField.Flags.Ephemeral });
+  } catch (err: any) {
+    if (err?.code === 10062) {
+      console.warn(
+        `[classSelect] Interaction ${interaction.id} истёк до deferReply — пользователь не получит ответ.`,
+      );
+      return;
+    }
+    throw err;
+  }
 
-  const member = await interaction.guild.members.fetch(interaction.user.id);
+  const member = interaction.member as GuildMember;
   const result = await applyClassForMember(member, kind, interaction.client, {
     deleteWelcomePrompt: true,
   });
