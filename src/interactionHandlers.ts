@@ -49,7 +49,7 @@ export async function handleGuildBosses(
       question: { text: "Когда идем на боссов?" },
       answers: [{ text: "Суббота" }, { text: "Воскресенье" }],
       duration: POLL_DURATION_HOURS,
-      allowMultiselect: false,
+      allowMultiselect: true,
     },
   });
 
@@ -64,7 +64,7 @@ export async function handleGuildBosses(
         { text: "После 22.00" },
       ],
       duration: POLL_DURATION_HOURS,
-      allowMultiselect: false,
+      allowMultiselect: true,
     },
   });
 

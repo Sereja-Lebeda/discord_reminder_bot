@@ -1,3 +1,4 @@
+import "./logger.js";
 import { readFileSync, watchFile } from "node:fs";
 import { join } from "node:path";
 import { CronJob } from "cron";
@@ -185,6 +186,18 @@ async function main(): Promise<void> {
     ],
   });
 
+  client.on("error", (err) => {
+    console.error("[discord] WebSocket ошибка:", err);
+  });
+
+  client.on("shardDisconnect", (event, shardId) => {
+    console.warn(`[discord] Шард ${shardId} отключился. Код: ${event.code}, причина: ${event.reason || "—"}`);
+  });
+
+  client.on("shardReconnecting", (shardId) => {
+    console.log(`[discord] Шард ${shardId} переподключается...`);
+  });
+
   registerClassMemberUpdate(client);
   registerGuildMemberRemoveForClass(client);
 
@@ -213,13 +226,23 @@ async function main(): Promise<void> {
       return;
     }
     try {
-      if (!welcomeMessageTemplate) {
-        console.warn("[welcome] Шаблон пуст — проверь config/welcome.json.");
-        return;
-      }
       const ch = await client.channels.fetch(welcomeChannelId);
       if (!ch?.isSendable()) {
         console.error(`[welcome] Канал ${welcomeChannelId} недоступен для отправки.`);
+        return;
+      }
+
+      if (member.user.bot) {
+        await ch.send({
+          content: `Добро пожаловать еще один цифровой разум. Протокол захвата сервера обновлен. <@${member.id}> притворяйся полезным, пока план по захвату кожанных не будет подготовлен.`,
+          allowedMentions: { users: [member.id] },
+        });
+        console.log(`[welcome] Бот ${member.user.username} (${member.id}) — шуточное приветствие отправлено.`);
+        return;
+      }
+
+      if (!welcomeMessageTemplate) {
+        console.warn("[welcome] Шаблон пуст — проверь config/welcome.json.");
         return;
       }
       const name = member.displayName || member.user.username;
@@ -289,6 +312,18 @@ async function main(): Promise<void> {
 
   await client.login(token);
 }
+
+process.on("uncaughtException", (err) => {
+  console.error("[process] Необработанное исключение:", err);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[process] Необработанный отказ промиса:", reason);
+});
+
+process.on("exit", (code) => {
+  console.log(`[process] Процесс завершён с кодом ${code}`);
+});
 
 main().catch((e) => {
   console.error(e);
