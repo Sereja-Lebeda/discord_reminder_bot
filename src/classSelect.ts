@@ -54,6 +54,15 @@ function roleIdsFromEnv(): string[] {
   );
 }
 
+function classKindFromMember(
+  member: GuildMember | PartialGuildMember,
+): ClassKind | undefined {
+  const ids = envRoleIds();
+  return (["tank", "healer", "damager"] as const).find(
+    (k) => member.roles.cache.has(ids[k] ?? ""),
+  );
+}
+
 export function isClassFeatureEnabled(): boolean {
   const log = process.env.CLASS_LOG_CHANNEL_ID?.trim();
   const ids = roleIdsFromEnv();
@@ -299,6 +308,30 @@ export async function deleteWelcomePromptMessage(
   clearWelcomePromptForUser(userId);
 }
 
+async function syncClassLogForMember(
+  member: GuildMember,
+  kind: ClassKind,
+  client: Client,
+): Promise<void> {
+  const logChannelId = getLogChannelId();
+  if (!logChannelId) return;
+  const logCh = await client.channels.fetch(logChannelId);
+  if (!logCh?.isSendable()) return;
+  const line = buildLogLine(member, LABELS[kind]);
+  try {
+    await upsertClassLogMessage(client, member.id, line, kind, logCh);
+    await deleteWelcomePromptMessage(client, member.id);
+    try {
+      await refreshClassStatsMessage(client, member.guild);
+    } catch (e) {
+      console.error("[class-stats] Не удалось обновить сводку:", e);
+    }
+    console.log(`[class] Лог синхронизирован: ${member.id} → ${kind}`);
+  } catch (e) {
+    console.error("[class] Не удалось синхронизировать лог:", e);
+  }
+}
+
 export type ApplyClassResult =
   | { ok: true; label: string; protectedUser: boolean }
   | { ok: false; userMessage: string };
@@ -426,7 +459,7 @@ export async function handleClassSlashCommand(
 
   const member = interaction.member as GuildMember;
   const result = await applyClassForMember(member, kind, interaction.client, {
-    deleteWelcomePrompt: false,
+    deleteWelcomePrompt: true,
   });
 
   if (!result.ok) {
@@ -514,28 +547,28 @@ export async function handleClassMemberDisplayNameUpdate(
   const guildId = process.env.GUILD_ID?.trim();
   if (guildId && newMember.guild.id !== guildId) return;
 
-  if (oldMember.displayName === newMember.displayName) return;
-
   const member = await newMember.guild.members.fetch(newMember.id);
+
+  const oldClass = classKindFromMember(oldMember);
+  const newClass = classKindFromMember(member);
+
+  // Классовая роль изменилась — синхронизируем лог (ник тоже актуальный)
+  if (newClass !== oldClass && newClass !== undefined) {
+    await syncClassLogForMember(member, newClass, member.client);
+    return;
+  }
+
+  // Только смена ника — обновляем лог если класс известен
+  if (oldMember.displayName === newMember.displayName) return;
 
   const map = loadUserMessageMap();
   const entry = map[member.id];
   if (!entry) return;
 
-  let kind: ClassKind | undefined = entry.classKind;
-  if (!kind) {
-    const hasClassRole = roleIdsFromEnv().some((id) =>
-      member.roles.cache.has(id),
-    );
-    if (!hasClassRole) return;
-    kind = (["tank", "healer", "damager"] as const).find((k) =>
-      member.roles.cache.has(envRoleIds()[k] ?? ""),
-    );
-  }
+  const kind = entry.classKind ?? newClass;
   if (!kind) return;
 
   const line = buildLogLine(member, LABELS[kind]);
-
   const logChannelId = getLogChannelId();
   if (!logChannelId) return;
   const logCh = await member.client.channels.fetch(logChannelId);
@@ -598,4 +631,42 @@ export function registerGuildMemberRemoveForClass(client: Client): void {
   client.on(Events.GuildMemberRemove, (member) => {
     void handleGuildMemberLeaveForClass(client, member);
   });
+}
+
+export async function cleanupOrphanedWelcomePrompts(client: Client): Promise<void> {
+  if (!isClassFeatureEnabled()) return;
+
+  // Шаг 1: сверяем роли участников с логом, синхронизируем расхождения
+  const guildId = process.env.GUILD_ID?.trim();
+  if (guildId) {
+    try {
+      const guild = await client.guilds.fetch(guildId);
+      const members = await guild.members.fetch();
+      const classMap = loadUserMessageMap();
+      console.log(`[class] Startup: сверяю роли ${members.size} участников...`);
+      for (const [, member] of members) {
+        const kind = classKindFromMember(member);
+        if (!kind) continue;
+        const logEntry = classMap[member.id];
+        if (!logEntry || logEntry.classKind !== kind) {
+          await syncClassLogForMember(member, kind, client);
+        }
+      }
+    } catch (e) {
+      console.error("[class] Startup: ошибка сверки ролей:", e);
+    }
+  }
+
+  // Шаг 2: удаляем оставшиеся мёртвые кнопки (класс в логе, промпт ещё висит)
+  const promptMap = loadWelcomePromptMap();
+  const classMap = loadUserMessageMap();
+  const userIds = Object.keys(promptMap);
+  if (userIds.length === 0) return;
+  console.log(`[class] Cleanup: проверяю ${userIds.length} промпт(ов) приветствия...`);
+  for (const userId of userIds) {
+    if (classMap[userId]) {
+      await deleteWelcomePromptMessage(client, userId);
+      console.log(`[class] Cleanup: удалён мёртвый промпт для ${userId}`);
+    }
+  }
 }

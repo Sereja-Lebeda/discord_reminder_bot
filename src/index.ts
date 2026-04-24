@@ -12,6 +12,7 @@ import {
 import dotenv from "dotenv";
 import { refreshClassStatsMessageWithMemberSync } from "./classStats.js";
 import {
+  cleanupOrphanedWelcomePrompts,
   handleClassButton,
   handleClassSlashCommand,
   isClassFeatureEnabled,
@@ -205,6 +206,7 @@ async function main(): Promise<void> {
     console.log(`Бот запущен: ${c.user.tag}`);
     loadWelcomeMessageTemplate();
     restorePendingDeletions(client);
+    await cleanupOrphanedWelcomePrompts(client);
     startCronFromConfig(client);
     await registerGuildSlashCommands(client);
 
