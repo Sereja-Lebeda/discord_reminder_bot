@@ -10,10 +10,6 @@ export const guildSlashCommands: ChatInputApplicationCommandData[] = [
     description: "Проверка, что бот онлайн",
   },
   {
-    name: "guild_bosses",
-    description: "Создать два опроса о походе на боссов",
-  },
-  {
     name: "clear_survey",
     description: "Удалить опросы бота в этом канале и снять отложенное удаление",
   },

@@ -15,25 +15,25 @@
     },
     {
       "id": "preSkillsReminder",
-      "cron": "45 20 * * 3,6",
+      "cron": "45 20 * * 3,5",
       "message": "Через 15 минут начинается проверка навыков!\nИ продлится 1 час.",
       "deleteAfterMinutes": 14
     },
     {
       "id": "skillsReminder",
-      "cron": "0 21 * * 3,6",
+      "cron": "0 21 * * 3,5",
       "message": "⚔️ Началась проверка навыков!\nПриходите на арену и покажите, на что вы способны 🏹",
       "deleteAfterMinutes": 60
     },
     {
       "id": "preReminderBreakingArmy",
-      "cron": "15 20 * * 3,6",
+      "cron": "15 20 * * 3,5",
       "message": "Через 15 минут начинается Breaking Army!\nИ продлится 2 часа.",
       "deleteAfterMinutes": 14
     },
     {
       "id": "reminderBreakingArmy",
-      "cron": "30 20 * * 3,6",
+      "cron": "30 20 * * 3,5",
       "message": "🐉 Breaking Army начался!\nПора показать боссу, кто здесь настоящий хозяин поля боя ⚔️",
       "deleteAfterMinutes": 120
     }

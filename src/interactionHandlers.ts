@@ -10,87 +10,21 @@ import {
 } from "./pendingMessageDeletions.js";
 
 const PING_REPLY_DELETE_MS = 15 * 60 * 1000;
-const BOSS_POLLS_DELETE_MS = 4 * 24 * 60 * 60 * 1000;
-
-/** Длительность опроса в часах (Discord: обычно 1–168). 96 ч = 4 суток. */
-const POLL_DURATION_HOURS = 96;
 
 export async function handlePing(
-  interaction: ChatInputCommandInteraction
+  interaction: ChatInputCommandInteraction,
 ): Promise<void> {
   await interaction.reply({ content: "Понг" });
   const msg = (await interaction.fetchReply()) as Message;
 
   const deleteAt = Date.now() + PING_REPLY_DELETE_MS;
-  scheduleMessageDeletion(
-    interaction.client,
-    msg.channelId,
-    msg.id,
-    deleteAt
-  );
-}
-
-export async function handleGuildBosses(
-  interaction: ChatInputCommandInteraction
-): Promise<void> {
-  const ch = interaction.channel;
-  if (!ch?.isSendable()) {
-    await interaction.reply({
-      content: "Эту команду можно использовать только в текстовом канале сервера.",
-      flags: MessageFlagsBitField.Flags.Ephemeral,
-    });
-    return;
-  }
-
-  await interaction.deferReply({ flags: MessageFlagsBitField.Flags.Ephemeral });
-
-  const poll1 = await ch.send({
-    poll: {
-      question: { text: "Когда идем на боссов?" },
-      answers: [{ text: "Суббота" }, { text: "Воскресенье" }],
-      duration: POLL_DURATION_HOURS,
-      allowMultiselect: true,
-    },
-  });
-
-  const poll2 = await ch.send({
-    poll: {
-      question: { text: "Во сколько пойдем на боссов?" },
-      answers: [
-        { text: "18.00 - 19.00" },
-        { text: "19.00 - 20.00" },
-        { text: "20.00 - 21.00" },
-        { text: "21.00 - 22.00" },
-        { text: "После 22.00" },
-      ],
-      duration: POLL_DURATION_HOURS,
-      allowMultiselect: true,
-    },
-  });
-
-  await interaction.editReply({
-    content: "Созданы два опроса в этом канале. Через 4 дня они будут удалены.",
-  });
-
-  const deleteAt = Date.now() + BOSS_POLLS_DELETE_MS;
-  scheduleMessageDeletion(
-    interaction.client,
-    poll1.channelId,
-    poll1.id,
-    deleteAt
-  );
-  scheduleMessageDeletion(
-    interaction.client,
-    poll2.channelId,
-    poll2.id,
-    deleteAt
-  );
+  scheduleMessageDeletion(interaction.client, msg.channelId, msg.id, deleteAt);
 }
 
 /** Сканирует историю канала пакетами и собирает сообщения-опросы от бота. */
 async function collectBotPollMessages(
   channel: TextBasedChannel,
-  botUserId: string
+  botUserId: string,
 ): Promise<Message[]> {
   const found: Message[] = [];
   let before: string | undefined;
@@ -119,12 +53,13 @@ async function collectBotPollMessages(
 }
 
 export async function handleClearSurvey(
-  interaction: ChatInputCommandInteraction
+  interaction: ChatInputCommandInteraction,
 ): Promise<void> {
   const ch = interaction.channel;
   if (!ch?.isTextBased()) {
     await interaction.reply({
-      content: "Эту команду можно использовать только в канале с историей сообщений.",
+      content:
+        "Эту команду можно использовать только в канале с историей сообщений.",
       flags: MessageFlagsBitField.Flags.Ephemeral,
     });
     return;

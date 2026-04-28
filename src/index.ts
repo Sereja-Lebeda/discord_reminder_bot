@@ -22,9 +22,13 @@ import {
 } from "./classSelect.js";
 import {
   handleClearSurvey,
-  handleGuildBosses,
   handlePing,
 } from "./interactionHandlers.js";
+import {
+  cleanupBossResults,
+  createBossPolls,
+  publishBossResults,
+} from "./bossPolls.js";
 import { restorePendingDeletions } from "./pendingMessageDeletions.js";
 import { guildSlashCommands } from "./slashCommands.js";
 
@@ -153,6 +157,18 @@ function startCronFromConfig(client: Client): void {
     scheduledJobs.push(cj);
     console.log(`[cron] Задача "${job.id}" → ${job.cron} (${tz})`);
   }
+
+  // Опросы боссов: создание Пн 09:00, итоги Чт 12:00, очистка Вс 00:00
+  const bossJobs: Array<[string, string, () => Promise<void>]> = [
+    ["boss-create",  "0 9 * * 1", () => createBossPolls(client)],
+    ["boss-results", "0 12 * * 4", () => publishBossResults(client)],
+    ["boss-cleanup", "0 0 * * 0",  () => cleanupBossResults(client)],
+  ];
+  for (const [id, cron, fn] of bossJobs) {
+    const cj = new CronJob(cron, () => { void fn(); }, null, true, tz);
+    scheduledJobs.push(cj);
+    console.log(`[cron] Задача "${id}" → ${cron} (${tz})`);
+  }
 }
 
 async function registerGuildSlashCommands(client: Client): Promise<void> {
@@ -276,8 +292,6 @@ async function main(): Promise<void> {
 
       if (interaction.commandName === "ping") {
         await handlePing(interaction);
-      } else if (interaction.commandName === "guild_bosses") {
-        await handleGuildBosses(interaction);
       } else if (interaction.commandName === "clear_survey") {
         await handleClearSurvey(interaction);
       } else if (interaction.commandName === "class") {
