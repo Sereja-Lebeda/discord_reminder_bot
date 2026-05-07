@@ -1,7 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Routes } from "discord.js";
-import type { Client } from "discord.js";
+import type { Client, Message, SendableChannels } from "discord.js";
 
 const DATA_PATH = join(process.cwd(), "data", "boss-polls.json");
 
@@ -104,6 +103,19 @@ function pollAnswersToEntries(poll: { answers: { forEach: (fn: (a: { text: strin
   return entries;
 }
 
+/** Ждёт финализации результатов опроса (poll.resultsFinalized), затем возвращает сообщение */
+async function fetchFinalizedPollMessage(ch: SendableChannels, messageId: string): Promise<Message> {
+  const MAX_ATTEMPTS = 10;
+  const DELAY_MS = 3000;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const msg = await ch.messages.fetch({ message: messageId, force: true });
+    if (msg.poll?.resultsFinalized) return msg;
+    console.log(`[boss-polls] Ожидаем финализации опроса ${messageId} (попытка ${attempt + 1}/${MAX_ATTEMPTS})...`);
+    await new Promise(r => setTimeout(r, DELAY_MS));
+  }
+  return ch.messages.fetch({ message: messageId, force: true });
+}
+
 /** Четверг 12:00 МСК — закрывает опросы, публикует результаты */
 export async function publishBossResults(client: Client): Promise<void> {
   const data = loadData();
@@ -118,20 +130,11 @@ export async function publishBossResults(client: Client): Promise<void> {
     return;
   }
 
-  // Принудительно закрываем оба опроса
-  for (const messageId of [data.thursdayPollMessageId, data.saturdayPollMessageId]) {
-    try {
-      await client.rest.post(Routes.expirePoll(data.channelId, messageId));
-    } catch (e) {
-      console.warn(`[boss-polls] Не удалось закрыть опрос ${messageId}:`, e);
-    }
-  }
-
   // Получаем актуальные данные с vote counts
   let msg1, msg2;
   try {
-    msg1 = await ch.messages.fetch(data.thursdayPollMessageId);
-    msg2 = await ch.messages.fetch(data.saturdayPollMessageId);
+    msg1 = await fetchFinalizedPollMessage(ch, data.thursdayPollMessageId);
+    msg2 = await fetchFinalizedPollMessage(ch, data.saturdayPollMessageId);
   } catch (e) {
     console.error("[boss-polls] Не удалось получить сообщения опросов — возможно, были удалены вручную:", e);
     saveData({ channelId: null, thursdayPollMessageId: null, saturdayPollMessageId: null, resultsMessageId: null });
@@ -165,23 +168,43 @@ export async function publishBossResults(client: Client): Promise<void> {
   console.log(`[boss-polls] Результаты опубликованы (${resultsMsg.id}), опросы удалены`);
 }
 
-/** Воскресенье 00:00 МСК — удаляет сообщение с результатами */
+/** Воскресенье 00:00 МСК — удаляет сообщение с результатами и poll-сообщения (если остались) */
 export async function cleanupBossResults(client: Client): Promise<void> {
   const data = loadData();
-  if (!data.channelId || !data.resultsMessageId) {
-    console.warn("[boss-polls] Нет сохранённого ID сообщения с результатами — пропускаем");
+  if (!data.channelId) {
+    console.warn("[boss-polls] Нет сохранённого channelId — пропускаем");
+    saveData({ channelId: null, thursdayPollMessageId: null, saturdayPollMessageId: null, resultsMessageId: null });
     return;
   }
 
+  let ch;
   try {
-    const ch = await client.channels.fetch(data.channelId);
-    if (ch?.isTextBased()) {
-      const msg = await ch.messages.fetch(data.resultsMessageId);
-      await msg.delete();
-      console.log(`[boss-polls] Сообщение с результатами ${data.resultsMessageId} удалено`);
+    ch = await client.channels.fetch(data.channelId);
+  } catch {
+    ch = null;
+  }
+
+  if (ch?.isTextBased()) {
+    if (data.resultsMessageId) {
+      try {
+        const msg = await ch.messages.fetch(data.resultsMessageId);
+        await msg.delete();
+        console.log(`[boss-polls] Сообщение с результатами ${data.resultsMessageId} удалено`);
+      } catch {
+        // уже удалено вручную — норма
+      }
     }
-  } catch (e) {
-    console.error("[boss-polls] Не удалось удалить сообщение с результатами:", e);
+
+    for (const msgId of [data.thursdayPollMessageId, data.saturdayPollMessageId]) {
+      if (!msgId) continue;
+      try {
+        const msg = await ch.messages.fetch(msgId);
+        await msg.delete();
+        console.log(`[boss-polls] Fallback: удалено poll-сообщение ${msgId}`);
+      } catch {
+        // уже удалено — норма
+      }
+    }
   }
 
   saveData({ channelId: null, thursdayPollMessageId: null, saturdayPollMessageId: null, resultsMessageId: null });

@@ -158,10 +158,10 @@ function startCronFromConfig(client: Client): void {
     console.log(`[cron] Задача "${job.id}" → ${job.cron} (${tz})`);
   }
 
-  // Опросы боссов: создание Пн 09:00, итоги Чт 12:00, очистка Вс 00:00
+  // Опросы боссов: создание Пн 09:00, итоги Чт 12:05, очистка Вс 00:00
   const bossJobs: Array<[string, string, () => Promise<void>]> = [
     ["boss-create",  "0 9 * * 1", () => createBossPolls(client)],
-    ["boss-results", "0 12 * * 4", () => publishBossResults(client)],
+    ["boss-results", "5 12 * * 4", () => publishBossResults(client)],
     ["boss-cleanup", "0 0 * * 0",  () => cleanupBossResults(client)],
   ];
   for (const [id, cron, fn] of bossJobs) {
