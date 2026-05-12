@@ -28,6 +28,7 @@ import {
   cleanupBossResults,
   createBossPolls,
   publishBossResults,
+  runCleanupIfOverdue,
 } from "./bossPolls.js";
 import { restorePendingDeletions } from "./pendingMessageDeletions.js";
 import { guildSlashCommands } from "./slashCommands.js";
@@ -162,7 +163,7 @@ function startCronFromConfig(client: Client): void {
   const bossJobs: Array<[string, string, () => Promise<void>]> = [
     ["boss-create",  "0 9 * * 1", () => createBossPolls(client)],
     ["boss-results", "5 12 * * 4", () => publishBossResults(client)],
-    ["boss-cleanup", "0 0 * * 0",  () => cleanupBossResults(client)],
+    ["boss-cleanup", "0 9 * * 0",  () => cleanupBossResults(client)],
   ];
   for (const [id, cron, fn] of bossJobs) {
     const cj = new CronJob(cron, () => { void fn(); }, null, true, tz);
@@ -224,6 +225,7 @@ async function main(): Promise<void> {
     restorePendingDeletions(client);
     await cleanupOrphanedWelcomePrompts(client);
     startCronFromConfig(client);
+    await runCleanupIfOverdue(client);
     await registerGuildSlashCommands(client);
 
     const guildId = process.env.GUILD_ID?.trim();

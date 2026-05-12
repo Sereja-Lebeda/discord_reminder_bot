@@ -209,3 +209,17 @@ export async function cleanupBossResults(client: Client): Promise<void> {
 
   saveData({ channelId: null, thursdayPollMessageId: null, saturdayPollMessageId: null, resultsMessageId: null });
 }
+
+/** Запускает очистку при старте бота, если cron пропустил воскресное удаление */
+export async function runCleanupIfOverdue(client: Client): Promise<void> {
+  const data = loadData();
+  if (!data.resultsMessageId) return;
+  // МСК = UTC+3
+  const mskDate = new Date(Date.now() + 3 * 3_600_000);
+  const day = mskDate.getUTCDay();   // 0=Вс, 1=Пн
+  const hour = mskDate.getUTCHours();
+  if (day === 0 || (day === 1 && hour < 9)) {
+    console.log("[boss-polls] Пропущенная очистка обнаружена при старте, запускаем...");
+    await cleanupBossResults(client);
+  }
+}
