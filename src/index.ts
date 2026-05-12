@@ -27,6 +27,7 @@ import {
 import {
   cleanupBossResults,
   createBossPolls,
+  preReadBossPolls,
   publishBossResults,
   runCleanupIfOverdue,
 } from "./bossPolls.js";
@@ -161,9 +162,10 @@ function startCronFromConfig(client: Client): void {
 
   // Опросы боссов: создание Пн 09:00, итоги Чт 12:05, очистка Вс 00:00
   const bossJobs: Array<[string, string, () => Promise<void>]> = [
-    ["boss-create",  "0 9 * * 1", () => createBossPolls(client)],
-    ["boss-results", "5 12 * * 4", () => publishBossResults(client)],
-    ["boss-cleanup", "0 9 * * 0",  () => cleanupBossResults(client)],
+    ["boss-create",   "0 9 * * 1",  () => createBossPolls(client)],
+    ["boss-preread",  "55 11 * * 4", () => preReadBossPolls(client)],
+    ["boss-results",  "5 12 * * 4", () => publishBossResults(client)],
+    ["boss-cleanup",  "0 9 * * 0",  () => cleanupBossResults(client)],
   ];
   for (const [id, cron, fn] of bossJobs) {
     const cj = new CronJob(cron, () => { void fn(); }, null, true, tz);

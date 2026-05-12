@@ -7,11 +7,19 @@ const DATA_PATH = join(process.cwd(), "data", "boss-polls.json");
 /** Длительность опросов: Пн 09:00 → Чт 12:00 = 75 часов */
 const POLL_DURATION_HOURS = 75;
 
+interface PreReadData {
+  thursdayVoterLines: string[];
+  saturdayVoterLines: string[];
+  thursdayWinnerText: string | null;
+  saturdayWinnerText: string | null;
+}
+
 interface BossPollsData {
   channelId: string | null;
   thursdayPollMessageId: string | null;
   saturdayPollMessageId: string | null;
   resultsMessageId: string | null;
+  preRead?: PreReadData;
 }
 
 function loadData(): BossPollsData {
@@ -75,12 +83,13 @@ export async function createBossPolls(client: Client): Promise<void> {
   console.log(`[boss-polls] Опросы созданы: четверг=${poll1.id}, суббота=${poll2.id}`);
 }
 
+// ─── Fallback-хелперы (используются если бот был офлайн в 11:55) ───────────
+
 interface AnswerEntry {
   text: string;
   voteCount: number;
 }
 
-/** Возвращает текст победителей (или нескольких при ничьей), либо null если 0 голосов */
 function getWinners(answers: AnswerEntry[]): string | null {
   const total = answers.reduce((sum, a) => sum + a.voteCount, 0);
   if (total === 0) return null;
@@ -103,7 +112,6 @@ function pollAnswersToEntries(poll: { answers: { forEach: (fn: (a: { text: strin
   return entries;
 }
 
-/** Ждёт финализации результатов опроса (poll.resultsFinalized), затем возвращает сообщение */
 async function fetchFinalizedPollMessage(ch: SendableChannels, messageId: string): Promise<Message> {
   const MAX_ATTEMPTS = 10;
   const DELAY_MS = 3000;
@@ -116,11 +124,74 @@ async function fetchFinalizedPollMessage(ch: SendableChannels, messageId: string
   return ch.messages.fetch({ message: messageId, force: true });
 }
 
-/** Четверг 12:00 МСК — закрывает опросы, публикует результаты */
-export async function publishBossResults(client: Client): Promise<void> {
+// ─── Основной поток ──────────────────────────────────────────────────────────
+
+async function readActivePollData(
+  ch: SendableChannels,
+  msgId: string,
+  dayLabel: string,
+): Promise<{ voterLines: string[]; winnerText: string | null }> {
+  const msg = await ch.messages.fetch({ message: msgId, force: true });
+  if (!msg.poll) return { voterLines: [], winnerText: null };
+
+  const answerData: Array<{ text: string; voterMentions: string[]; count: number }> = [];
+  for (const answer of msg.poll.answers.values()) {
+    const voters = await answer.voters.fetch({ limit: 100 });
+    answerData.push({
+      text: answer.text ?? "?",
+      voterMentions: [...voters.values()].map(u => `<@${u.id}>`),
+      count: voters.size,
+    });
+  }
+
+  const maxVotes = Math.max(0, ...answerData.map(a => a.count));
+  if (maxVotes === 0) return { voterLines: [], winnerText: null };
+
+  const winners = answerData.filter(a => a.count === maxVotes);
+  return {
+    voterLines: winners.map(w => `**${dayLabel} — ${w.text}:** ${w.voterMentions.join(", ")}`),
+    winnerText: winners.map(w => w.text).join(" и "),
+  };
+}
+
+/** Четверг 11:55 МСК — читает voters пока опросы ещё активны, сохраняет в JSON */
+export async function preReadBossPolls(client: Client): Promise<void> {
   const data = loadData();
   if (!data.channelId || !data.thursdayPollMessageId || !data.saturdayPollMessageId) {
-    console.warn("[boss-polls] Нет сохранённых ID опросов — пропускаем публикацию результатов");
+    console.warn("[boss-polls] preRead: нет сохранённых ID опросов — пропускаем");
+    return;
+  }
+
+  const ch = await client.channels.fetch(data.channelId);
+  if (!ch?.isSendable()) {
+    console.error(`[boss-polls] preRead: канал ${data.channelId} недоступен`);
+    return;
+  }
+
+  try {
+    const thursday = await readActivePollData(ch, data.thursdayPollMessageId, "Четверг");
+    const saturday = await readActivePollData(ch, data.saturdayPollMessageId, "Суббота");
+
+    saveData({
+      ...data,
+      preRead: {
+        thursdayVoterLines: thursday.voterLines,
+        saturdayVoterLines: saturday.voterLines,
+        thursdayWinnerText: thursday.winnerText,
+        saturdayWinnerText: saturday.winnerText,
+      },
+    });
+    console.log("[boss-polls] Предварительное чтение голосов завершено");
+  } catch (e) {
+    console.error("[boss-polls] Не удалось выполнить preRead:", e);
+  }
+}
+
+/** Четверг 12:05 МСК — публикует результаты опросов */
+export async function publishBossResults(client: Client): Promise<void> {
+  const data = loadData();
+  if (!data.channelId) {
+    console.warn("[boss-polls] Нет сохранённого channelId — пропускаем публикацию результатов");
     return;
   }
 
@@ -130,45 +201,82 @@ export async function publishBossResults(client: Client): Promise<void> {
     return;
   }
 
-  // Получаем актуальные данные с vote counts
-  let msg1, msg2;
-  try {
-    msg1 = await fetchFinalizedPollMessage(ch, data.thursdayPollMessageId);
-    msg2 = await fetchFinalizedPollMessage(ch, data.saturdayPollMessageId);
-  } catch (e) {
-    console.error("[boss-polls] Не удалось получить сообщения опросов — возможно, были удалены вручную:", e);
-    saveData({ channelId: null, thursdayPollMessageId: null, saturdayPollMessageId: null, resultsMessageId: null });
-    return;
-  }
+  let thursdayWinner: string | null;
+  let saturdayWinner: string | null;
+  let allVoterLines: string[] = [];
 
-  const thursdayResult = getWinners(pollAnswersToEntries(msg1.poll));
-  const saturdayResult = getWinners(pollAnswersToEntries(msg2.poll));
-
-  const thursdayLine = thursdayResult
-    ? `По решению большинства голосов, поход на босса в **__четверг__** - ${thursdayResult}`
-    : "Поход на босса в **__четверг__** отменяется, так как никто не хочет идти";
-  const saturdayLine = saturdayResult
-    ? `По решению большинства голосов, поход на босса в **__субботу__** - ${saturdayResult}`
-    : "Поход на босса в **__субботу__** отменяется, так как никто не хочет идти";
-
-  const resultsContent = [thursdayLine, saturdayLine].join("\n");
-
-  const resultsMsg = await ch.send({ content: resultsContent });
-
-  // Удаляем poll-сообщения
-  for (const msg of [msg1, msg2]) {
+  if (data.preRead) {
+    thursdayWinner = data.preRead.thursdayWinnerText;
+    saturdayWinner = data.preRead.saturdayWinnerText;
+    allVoterLines = [...data.preRead.thursdayVoterLines, ...data.preRead.saturdayVoterLines];
+  } else {
+    // Fallback: бот был офлайн в 11:55 — берём voteCount из завершённых опросов (без списка voters)
+    console.warn("[boss-polls] preRead отсутствует, используем fallback через voteCount (список проголосовавших недоступен)");
+    if (!data.thursdayPollMessageId || !data.saturdayPollMessageId) {
+      console.warn("[boss-polls] Нет ID опросов — пропускаем");
+      return;
+    }
     try {
-      await msg.delete();
+      const msg1 = await fetchFinalizedPollMessage(ch, data.thursdayPollMessageId);
+      const msg2 = await fetchFinalizedPollMessage(ch, data.saturdayPollMessageId);
+      thursdayWinner = getWinners(pollAnswersToEntries(msg1.poll));
+      saturdayWinner = getWinners(pollAnswersToEntries(msg2.poll));
     } catch (e) {
-      console.error(`[boss-polls] Не удалось удалить опрос ${msg.id}:`, e);
+      console.error("[boss-polls] Fallback: не удалось получить данные опросов:", e);
+      saveData({ channelId: null, thursdayPollMessageId: null, saturdayPollMessageId: null, resultsMessageId: null });
+      return;
     }
   }
 
-  saveData({ ...data, resultsMessageId: resultsMsg.id });
+  // Список проголосовавших → VOTERS_CHANNEL_ID (постоянное сообщение)
+  if (allVoterLines.length > 0) {
+    const votersChannelId = process.env.VOTERS_CHANNEL_ID?.trim();
+    if (votersChannelId) {
+      try {
+        const votersCh = await client.channels.fetch(votersChannelId);
+        if (votersCh?.isSendable()) {
+          await votersCh.send({ content: allVoterLines.join("\n") });
+          console.log("[boss-polls] Список проголосовавших отправлен");
+        }
+      } catch (e) {
+        console.error("[boss-polls] Не удалось отправить список проголосовавших:", e);
+      }
+    } else {
+      console.warn("[boss-polls] VOTERS_CHANNEL_ID не задан — список проголосовавших не отправлен");
+    }
+  }
+
+  // Итоговое сообщение → REMINDER_CHANNEL_ID
+  const thursdayLine = thursdayWinner
+    ? `По решению большинства голосов, поход на босса в **__четверг__** - ${thursdayWinner}`
+    : "Поход на босса в **__четверг__** отменяется, так как никто не хочет идти";
+  const saturdayLine = saturdayWinner
+    ? `По решению большинства голосов, поход на босса в **__субботу__** - ${saturdayWinner}`
+    : "Поход на босса в **__субботу__** отменяется, так как никто не хочет идти";
+
+  const resultsMsg = await ch.send({ content: [thursdayLine, saturdayLine].join("\n") });
+
+  // Удаляем poll-сообщения
+  for (const msgId of [data.thursdayPollMessageId, data.saturdayPollMessageId]) {
+    if (!msgId) continue;
+    try {
+      const msg = await ch.messages.fetch(msgId);
+      await msg.delete();
+    } catch {
+      // уже удалено — норма
+    }
+  }
+
+  saveData({
+    channelId: data.channelId,
+    thursdayPollMessageId: data.thursdayPollMessageId,
+    saturdayPollMessageId: data.saturdayPollMessageId,
+    resultsMessageId: resultsMsg.id,
+  });
   console.log(`[boss-polls] Результаты опубликованы (${resultsMsg.id}), опросы удалены`);
 }
 
-/** Воскресенье 00:00 МСК — удаляет сообщение с результатами и poll-сообщения (если остались) */
+/** Воскресенье 09:00 МСК — удаляет сообщение с результатами и poll-сообщения (если остались) */
 export async function cleanupBossResults(client: Client): Promise<void> {
   const data = loadData();
   if (!data.channelId) {
