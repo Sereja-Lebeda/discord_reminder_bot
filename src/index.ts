@@ -36,6 +36,8 @@ import { guildSlashCommands } from "./slashCommands.js";
 
 dotenv.config();
 
+const BOT_TOKEN = process.env.BOT_TOKEN?.trim();
+
 interface ReminderJob {
   id: string;
   cron: string;
@@ -192,8 +194,7 @@ async function registerGuildSlashCommands(client: Client): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const token = process.env.BOT_TOKEN?.trim();
-  if (!token) {
+  if (!BOT_TOKEN) {
     console.error("В .env не задан BOT_TOKEN.");
     process.exit(1);
   }
@@ -208,6 +209,10 @@ async function main(): Promise<void> {
 
   client.on("error", (err) => {
     console.error("[discord] WebSocket ошибка:", err);
+  });
+
+  client.on("shardError", (err, shardId) => {
+    console.error(`[discord] Шард ${shardId} — ошибка WebSocket:`, err.message);
   });
 
   client.on("shardDisconnect", (event, shardId) => {
@@ -330,11 +335,25 @@ async function main(): Promise<void> {
     loadWelcomeMessageTemplate();
   });
 
-  await client.login(token);
+  await client.login(BOT_TOKEN);
 }
 
 process.on("uncaughtException", (err) => {
   console.error("[process] Необработанное исключение:", err);
+
+  const isHandshakeTimeout =
+    err.message?.includes("handshake has timed out") ||
+    err.message?.includes("WebSocket was closed before");
+
+  if (isHandshakeTimeout && botClient) {
+    console.warn("[process] Таймаут рукопожатия — пересоздаём соединение через 10 с...");
+    botClient.destroy();
+    setTimeout(() => {
+      botClient
+        ?.login(BOT_TOKEN)
+        .catch((e: unknown) => console.error("[process] Ошибка повторного входа:", e));
+    }, 10_000);
+  }
 });
 
 process.on("unhandledRejection", (reason) => {
