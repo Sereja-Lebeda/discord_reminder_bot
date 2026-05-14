@@ -187,6 +187,26 @@ export async function preReadBossPolls(client: Client): Promise<void> {
   }
 }
 
+/** Ищет и удаляет системное PollResult-сообщение Discord (тип 46) для данного опроса */
+async function deletePollResultMessage(ch: SendableChannels, pollMsgId: string): Promise<void> {
+  // Даём Discord время создать PollResult-сообщение, если оно ещё не появилось
+  await new Promise(r => setTimeout(r, 2000));
+  try {
+    const recent = await ch.messages.fetch({ limit: 20 });
+    const pollResultMsg = recent.find(
+      (m: Message) => m.type === 46 && m.reference?.messageId === pollMsgId
+    );
+    if (pollResultMsg) {
+      await pollResultMsg.delete();
+      console.log(`[boss-polls] PollResult-сообщение для ${pollMsgId} удалено`);
+    } else {
+      console.warn(`[boss-polls] PollResult-сообщение для ${pollMsgId} не найдено`);
+    }
+  } catch (e) {
+    console.error(`[boss-polls] Не удалось удалить PollResult-сообщение для ${pollMsgId}:`, e);
+  }
+}
+
 /** Четверг 12:05 МСК — публикует результаты опросов */
 export async function publishBossResults(client: Client): Promise<void> {
   const data = loadData();
@@ -256,15 +276,17 @@ export async function publishBossResults(client: Client): Promise<void> {
 
   const resultsMsg = await ch.send({ content: [thursdayLine, saturdayLine].join("\n") });
 
-  // Удаляем poll-сообщения
+  // Удаляем poll-сообщения и системные PollResult-сообщения Discord (тип 46)
   for (const msgId of [data.thursdayPollMessageId, data.saturdayPollMessageId]) {
     if (!msgId) continue;
     try {
       const msg = await ch.messages.fetch(msgId);
       await msg.delete();
-    } catch {
-      // уже удалено — норма
+      console.log(`[boss-polls] Poll-сообщение ${msgId} удалено`);
+    } catch (e) {
+      console.error(`[boss-polls] Не удалось удалить poll-сообщение ${msgId}:`, e);
     }
+    await deletePollResultMessage(ch, msgId);
   }
 
   saveData({
@@ -273,7 +295,7 @@ export async function publishBossResults(client: Client): Promise<void> {
     saturdayPollMessageId: data.saturdayPollMessageId,
     resultsMessageId: resultsMsg.id,
   });
-  console.log(`[boss-polls] Результаты опубликованы (${resultsMsg.id}), опросы удалены`);
+  console.log(`[boss-polls] Результаты опубликованы (${resultsMsg.id})`);
 }
 
 /** Воскресенье 09:00 МСК — удаляет сообщение с результатами и poll-сообщения (если остались) */
@@ -316,6 +338,43 @@ export async function cleanupBossResults(client: Client): Promise<void> {
   }
 
   saveData({ channelId: null, thursdayPollMessageId: null, saturdayPollMessageId: null, resultsMessageId: null });
+}
+
+/** При старте бота проверяет наличие системных PollResult-сообщений Discord (тип 46) в канале */
+export async function logPollResultMessages(client: Client): Promise<void> {
+  const data = loadData();
+  const pollIds = [data.thursdayPollMessageId, data.saturdayPollMessageId].filter(Boolean) as string[];
+  if (!data.channelId || pollIds.length === 0) return;
+
+  let ch;
+  try {
+    ch = await client.channels.fetch(data.channelId);
+  } catch {
+    ch = null;
+  }
+  if (!ch?.isTextBased()) return;
+
+  try {
+    const recent = await ch.messages.fetch({ limit: 100 });
+    for (const pollMsgId of pollIds) {
+      const found = recent.filter((m: Message) => m.type === 46 && m.reference?.messageId === pollMsgId);
+      if (found.size > 0) {
+        for (const m of found.values()) {
+          console.log(`[boss-polls] Startup: найдено PollResult-сообщение (тип 46) id=${m.id} для poll=${pollMsgId}`);
+          try {
+            await m.delete();
+            console.log(`[boss-polls] Startup: PollResult-сообщение ${m.id} удалено`);
+          } catch (e) {
+            console.error(`[boss-polls] Startup: не удалось удалить PollResult-сообщение ${m.id}:`, e);
+          }
+        }
+      } else {
+        console.log(`[boss-polls] Startup: PollResult-сообщение для poll=${pollMsgId} не найдено в последних 100 сообщениях`);
+      }
+    }
+  } catch (e) {
+    console.error("[boss-polls] Startup: ошибка при поиске PollResult-сообщений:", e);
+  }
 }
 
 /** Запускает очистку при старте бота, если cron пропустил воскресное удаление */

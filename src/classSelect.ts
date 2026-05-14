@@ -624,7 +624,8 @@ async function handleGuildMemberLeaveForClass(
   } catch (e) {
     console.error("[class-stats] Не удалось обновить сводку после выхода:", e);
   }
-  console.log(`[class] Пользователь ${member.id} вышел — лог очищен, сводка пересчитана.`);
+  const displayName = member.displayName ?? member.user?.username ?? "неизвестно";
+  console.log(`[class] Пользователь ${member.id} (${displayName}) вышел — лог очищен, сводка пересчитана.`);
 }
 
 export function registerGuildMemberRemoveForClass(client: Client): void {

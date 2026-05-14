@@ -27,6 +27,7 @@ import {
 import {
   cleanupBossResults,
   createBossPolls,
+  logPollResultMessages,
   preReadBossPolls,
   publishBossResults,
   runCleanupIfOverdue,
@@ -233,6 +234,7 @@ async function main(): Promise<void> {
     await cleanupOrphanedWelcomePrompts(client);
     startCronFromConfig(client);
     await runCleanupIfOverdue(client);
+    await logPollResultMessages(client);
     await registerGuildSlashCommands(client);
 
     const guildId = process.env.GUILD_ID?.trim();
