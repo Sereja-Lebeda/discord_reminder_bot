@@ -7,6 +7,7 @@ import {
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Client,
+  type Collection,
   type GuildMember,
   type PartialGuildMember,
   type SendableChannels,
@@ -60,6 +61,13 @@ function classKindFromMember(
   const ids = envRoleIds();
   return (["tank", "healer", "damager"] as const).find(
     (k) => member.roles.cache.has(ids[k] ?? ""),
+  );
+}
+
+function memberHasNonClassRole(member: GuildMember | PartialGuildMember): boolean {
+  const classRoleIds = new Set(roleIdsFromEnv());
+  return member.roles.cache.some(
+    (r) => r.id !== member.guild.id && !classRoleIds.has(r.id),
   );
 }
 
@@ -259,6 +267,10 @@ export async function sendWelcomeClassPrompt(
   welcomeChannel: SendableChannels,
 ): Promise<void> {
   if (!isClassFeatureEnabled()) return;
+  if (memberHasNonClassRole(member)) {
+    console.log(`[class] Промпт не отправлен — у ${member.id} уже есть не-классовая роль`);
+    return;
+  }
 
   const row = buildClassRowForMember(member.id);
   const msg = await welcomeChannel.send({
@@ -585,6 +597,14 @@ export async function handleClassMemberDisplayNameUpdate(
 export function registerClassMemberUpdate(client: Client): void {
   client.on(Events.GuildMemberUpdate, (oldM, newM) => {
     void handleClassMemberDisplayNameUpdate(oldM, newM);
+    if (newM.roles.cache.size > oldM.roles.cache.size && memberHasNonClassRole(newM)) {
+      const map = loadWelcomePromptMap();
+      if (map[newM.id]) {
+        void deleteWelcomePromptMessage(client, newM.id).then(() =>
+          console.log(`[class] Промпт удалён — у ${newM.id} выдана не-классовая роль`),
+        );
+      }
+    }
   });
 }
 
@@ -634,18 +654,43 @@ export function registerGuildMemberRemoveForClass(client: Client): void {
   });
 }
 
+export async function dailyWelcomePromptCleanup(client: Client): Promise<void> {
+  if (!isClassFeatureEnabled()) return;
+  const promptMap = loadWelcomePromptMap();
+  const userIds = Object.keys(promptMap);
+  if (userIds.length === 0) return;
+  const guildId = process.env.GUILD_ID?.trim();
+  if (!guildId) return;
+
+  console.log(`[class] Daily cleanup: проверяю ${userIds.length} промпт(ов)...`);
+  try {
+    const guild = await client.guilds.fetch(guildId);
+    const members = await guild.members.fetch();
+    for (const userId of userIds) {
+      const member = members.get(userId);
+      if (member && memberHasNonClassRole(member)) {
+        await deleteWelcomePromptMessage(client, userId);
+        console.log(`[class] Daily cleanup: удалён промпт для ${userId} — есть не-классовая роль`);
+      }
+    }
+  } catch (e) {
+    console.error("[class] Daily cleanup: ошибка:", e);
+  }
+}
+
 export async function cleanupOrphanedWelcomePrompts(client: Client): Promise<void> {
   if (!isClassFeatureEnabled()) return;
 
   // Шаг 1: сверяем роли участников с логом, синхронизируем расхождения
   const guildId = process.env.GUILD_ID?.trim();
+  let fetchedMembers: Collection<string, GuildMember> | undefined;
   if (guildId) {
     try {
       const guild = await client.guilds.fetch(guildId);
-      const members = await guild.members.fetch();
+      fetchedMembers = await guild.members.fetch();
       const classMap = loadUserMessageMap();
-      console.log(`[class] Startup: сверяю роли ${members.size} участников...`);
-      for (const [, member] of members) {
+      console.log(`[class] Startup: сверяю роли ${fetchedMembers.size} участников...`);
+      for (const [, member] of fetchedMembers) {
         const kind = classKindFromMember(member);
         if (!kind) continue;
         const logEntry = classMap[member.id];
@@ -658,7 +703,7 @@ export async function cleanupOrphanedWelcomePrompts(client: Client): Promise<voi
     }
   }
 
-  // Шаг 2: удаляем оставшиеся мёртвые кнопки (класс в логе, промпт ещё висит)
+  // Шаг 2: удаляем мёртвые промпты (класс в логе или выдана не-классовая роль)
   const promptMap = loadWelcomePromptMap();
   const classMap = loadUserMessageMap();
   const userIds = Object.keys(promptMap);
@@ -668,6 +713,12 @@ export async function cleanupOrphanedWelcomePrompts(client: Client): Promise<voi
     if (classMap[userId]) {
       await deleteWelcomePromptMessage(client, userId);
       console.log(`[class] Cleanup: удалён мёртвый промпт для ${userId}`);
+    } else {
+      const member = fetchedMembers?.get(userId);
+      if (member && memberHasNonClassRole(member)) {
+        await deleteWelcomePromptMessage(client, userId);
+        console.log(`[class] Cleanup: удалён промпт для ${userId} — есть не-классовая роль`);
+      }
     }
   }
 }
