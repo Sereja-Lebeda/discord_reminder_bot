@@ -32,6 +32,8 @@ const WELCOME_PROMPTS_PATH = join(
 
 export const CLASS_BUTTON_PREFIX = "class:" as const;
 
+const GUILD_FRIEND_ROLE_ID = "1502185873859543060" as const;
+
 export type ClassKind = "tank" | "healer" | "damager";
 
 const LABELS: Record<ClassKind, string> = {
@@ -256,6 +258,10 @@ function buildClassRowForMember(
       .setCustomId(`${CLASS_BUTTON_PREFIX}${targetUserId}:damager`)
       .setLabel(LABELS.damager)
       .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`${CLASS_BUTTON_PREFIX}${targetUserId}:guild-friend`)
+      .setLabel("Друг гильдии")
+      .setStyle(ButtonStyle.Danger),
   );
 }
 
@@ -286,16 +292,18 @@ export async function sendWelcomeClassPrompt(
   console.log(`[class] Промпт выбора класса для ${member.id} → ${msg.id}`);
 }
 
-/** Разбор `class:<snowflake>:tank|healer|damager` */
+/** Разбор `class:<snowflake>:tank|healer|damager|guild-friend` */
 function parseClassButtonCustomId(
   customId: string,
-): { targetUserId: string; kind: ClassKind } | null {
+): { targetUserId: string; kind: ClassKind | "guild-friend" } | null {
   if (!customId.startsWith(CLASS_BUTTON_PREFIX)) return null;
   const rest = customId.slice(CLASS_BUTTON_PREFIX.length);
   const lastColon = rest.lastIndexOf(":");
   if (lastColon <= 0) return null;
   const targetUserId = rest.slice(0, lastColon);
-  const kind = parseClass(rest.slice(lastColon + 1));
+  const rawKind = rest.slice(lastColon + 1);
+  if (rawKind === "guild-friend") return { targetUserId, kind: "guild-friend" };
+  const kind = parseClass(rawKind);
   if (!kind) return null;
   return { targetUserId, kind };
 }
@@ -533,6 +541,24 @@ export async function handleClassButton(
   }
 
   const member = interaction.member as GuildMember;
+
+  if (kind === "guild-friend") {
+    try {
+      await member.roles.add(GUILD_FRIEND_ROLE_ID);
+    } catch (e) {
+      console.error("[class] Не удалось выдать роль Друга гильдии:", e);
+      await interaction.editReply({
+        content: "Не удалось выдать роль. Обратись к модератору.",
+      });
+      return;
+    }
+    await deleteWelcomePromptMessage(interaction.client, member.id);
+    await interaction.editReply({
+      content: "Роль «Друг гильдии» выдана. Добро пожаловать!",
+    });
+    return;
+  }
+
   const result = await applyClassForMember(member, kind, interaction.client, {
     deleteWelcomePrompt: true,
   });
