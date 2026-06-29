@@ -32,7 +32,7 @@ const WELCOME_PROMPTS_PATH = join(
 
 export const CLASS_BUTTON_PREFIX = "class:" as const;
 
-const GUILD_FRIEND_ROLE_ID = "1502185873859543060" as const;
+const GUILD_FRIEND_ROLE_ID = process.env.GUILD_FRIEND_ROLE_ID?.trim() ?? "";
 
 export type ClassKind = "tank" | "healer" | "damager";
 

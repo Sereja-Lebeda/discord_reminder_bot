@@ -1,9 +1,10 @@
 node_modules/
 dist/
 .env
-*.log
+logs/
 .cursor/
 data/pending-deletions.json
+data/boss-polls.json
 # Привязки userId → messageId для лога классов (данные участников)
 config/class-user-messages.json
 config/class-welcome-prompts.json
