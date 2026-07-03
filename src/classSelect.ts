@@ -29,6 +29,21 @@ const WELCOME_PROMPTS_PATH = join(
   "config",
   "class-welcome-prompts.json",
 );
+const STATS_MSG_PATH = join(
+  process.cwd(),
+  "config",
+  "class-stats-message.json",
+);
+
+function loadStatsMessageId(): string | null {
+  try {
+    const raw = readFileSync(STATS_MSG_PATH, "utf-8");
+    const d = JSON.parse(raw) as { messageId?: string };
+    return d.messageId?.trim() || null;
+  } catch {
+    return null;
+  }
+}
 
 export const CLASS_BUTTON_PREFIX = "class:" as const;
 
@@ -726,6 +741,75 @@ export async function cleanupOrphanedWelcomePrompts(client: Client): Promise<voi
       }
     } catch (e) {
       console.error("[class] Startup: ошибка сверки ролей:", e);
+    }
+  }
+
+  // Шаг 1b: удаляем JSON-записи пользователей, покинувших сервер или потерявших классовую роль
+  if (fetchedMembers) {
+    const staleMap = loadUserMessageMap();
+    for (const userId of Object.keys(staleMap)) {
+      const member = fetchedMembers.get(userId);
+      if (!member) {
+        await removeUserLogLineOnLeave(client, userId);
+        console.log(`[class] Startup: удалена запись ${userId} — пользователь покинул сервер`);
+      } else if (!classKindFromMember(member) && !memberHasProtectedRole(member)) {
+        await removeUserLogLineOnLeave(client, userId);
+        console.log(`[class] Startup: удалена запись ${userId} — нет классовой роли`);
+      }
+    }
+  }
+
+  // Шаг 1c: удаляем orphaned сообщения бота в канале лога (не числятся в JSON)
+  const logChannelId = getLogChannelId();
+  if (logChannelId && client.user) {
+    try {
+      const logCh = await client.channels.fetch(logChannelId);
+      if (logCh?.isSendable()) {
+        const freshMap = loadUserMessageMap();
+        const trackedIds = new Set(Object.values(freshMap).map((e) => e.messageId));
+        const statsId = loadStatsMessageId();
+        if (statsId) trackedIds.add(statsId);
+
+        const botId = client.user.id;
+        let before: string | undefined;
+        let deletedCount = 0;
+
+        for (let i = 0; i < 15; i++) {
+          const batch = await logCh.messages.fetch({
+            limit: 100,
+            ...(before !== undefined ? { before } : {}),
+          });
+          if (batch.size === 0) break;
+
+          for (const msg of batch.values()) {
+            if (msg.author.id === botId && !trackedIds.has(msg.id)) {
+              try {
+                await msg.delete();
+                deletedCount++;
+              } catch (e: unknown) {
+                const code =
+                  e && typeof e === "object" && "code" in e
+                    ? Number((e as { code: unknown }).code)
+                    : NaN;
+                if (code !== 10008 && code !== 10003) {
+                  console.error("[class] Не удалось удалить orphaned сообщение:", e);
+                }
+              }
+            }
+          }
+
+          const oldest = batch.last();
+          if (!oldest) break;
+          before = oldest.id;
+          if (batch.size < 100) break;
+        }
+
+        if (deletedCount > 0) {
+          console.log(`[class] Startup: удалено ${deletedCount} orphaned сообщений из канала лога.`);
+        }
+      }
+    } catch (e) {
+      console.error("[class] Startup: ошибка очистки orphaned сообщений:", e);
     }
   }
 

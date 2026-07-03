@@ -10,7 +10,10 @@ import {
   type GuildMember,
 } from "discord.js";
 import dotenv from "dotenv";
-import { refreshClassStatsMessageWithMemberSync } from "./classStats.js";
+import {
+  refreshClassStatsMessage,
+  refreshClassStatsMessageWithMemberSync,
+} from "./classStats.js";
 import {
   cleanupOrphanedWelcomePrompts,
   dailyWelcomePromptCleanup,
@@ -248,7 +251,8 @@ async function main(): Promise<void> {
     if (guildId && process.env.CLASS_LOG_CHANNEL_ID?.trim()) {
       try {
         const guild = await c.guilds.fetch(guildId);
-        await refreshClassStatsMessageWithMemberSync(c, guild);
+        // Члены уже в кеше после cleanupOrphanedWelcomePrompts — повторный fetch не нужен
+        await refreshClassStatsMessage(c, guild);
       } catch (e) {
         console.error("[class-stats] Не удалось обновить сводку при старте:", e);
       }
