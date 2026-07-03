@@ -16,14 +16,14 @@
     {
       "id": "preSkillsReminder",
       "cron": "45 20 * * 3,5",
-      "message": "Через 15 минут начинается проверка навыков!\nИ продлится 1 час.",
+      "message": "Через 15 минут начинается проверка навыков!\nИ продлится 2 часа.",
       "deleteAfterMinutes": 14
     },
     {
       "id": "skillsReminder",
       "cron": "0 21 * * 3,5",
       "message": "⚔️ Началась проверка навыков!\nПриходите на арену и покажите, на что вы способны 🏹",
-      "deleteAfterMinutes": 60
+      "deleteAfterMinutes": 120
     },
     {
       "id": "preReminderBreakingArmy",
