@@ -35,6 +35,7 @@ import {
 } from "./bossPolls.js";
 import { restorePendingDeletions } from "./pendingMessageDeletions.js";
 import { guildSlashCommands } from "./slashCommands.js";
+import { initPromoCodeChannel, handlePromoMessage } from "./promoCodes.js";
 
 dotenv.config();
 
@@ -207,6 +208,9 @@ async function main(): Promise<void> {
       GatewayIntentBits.Guilds,
       /** Нужен для события `guildMemberAdd` (новый участник). Включи «Server Members Intent» в Developer Portal → Bot. */
       GatewayIntentBits.GuildMembers,
+      GatewayIntentBits.GuildMessages,
+      /** Нужен для чтения содержимого сообщений. Включи «Message Content Intent» в Developer Portal → Bot. */
+      GatewayIntentBits.MessageContent,
     ],
   });
 
@@ -237,6 +241,7 @@ async function main(): Promise<void> {
     startCronFromConfig(client);
     await runCleanupIfOverdue(client);
     await logPollResultMessages(client);
+    await initPromoCodeChannel(client);
     await registerGuildSlashCommands(client);
 
     const guildId = process.env.GUILD_ID?.trim();
@@ -322,6 +327,14 @@ async function main(): Promise<void> {
       } else {
         await interaction.reply(payload).catch(() => {});
       }
+    }
+  });
+
+  client.on(Events.MessageCreate, async (message) => {
+    try {
+      await handlePromoMessage(message);
+    } catch (e) {
+      console.error("[promo-codes] Ошибка обработчика messageCreate:", e);
     }
   });
 
