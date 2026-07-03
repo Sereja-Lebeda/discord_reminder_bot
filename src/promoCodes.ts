@@ -47,25 +47,6 @@ function buildChunks(codes: string[]): string[] {
   return chunks;
 }
 
-function extractCodesFromMessages(messages: Message[], botUserId: string): Set<string> {
-  const codes = new Set<string>();
-
-  for (const msg of messages) {
-    if (msg.pinned) continue;
-    if (!msg.content) continue;
-
-    if (msg.author.id === botUserId) {
-      for (const line of msg.content.split(/\r?\n/)) {
-        const n = extractCode(line);
-        if (n) codes.add(n);
-      }
-    } else {
-      const n = extractCode(msg.content);
-      if (n) codes.add(n);
-    }
-  }
-  return codes;
-}
 
 async function scanAllMessages(channel: SendableChannels): Promise<Message[]> {
   const all: Message[] = [];
@@ -162,27 +143,44 @@ export async function initPromoCodeChannel(client: Client): Promise<void> {
     return;
   }
 
-  promoSet = extractCodesFromMessages(allMessages, client.user.id);
-  console.log(`[promo-codes] Найдено уникальных кодов: ${promoSet.size}`);
+  const botUserId = client.user.id;
+  const botMsgs  = allMessages.filter(m => !m.pinned && m.author.id === botUserId);
+  const userMsgs = allMessages.filter(m => !m.pinned && m.author.id !== botUserId);
 
-  for (const msg of allMessages) {
-    if (!msg.pinned) await safeDelete(msg);
-  }
-
-  botMessageIds = [];
-  const chunks = buildChunks([...promoSet]);
-  for (const chunk of chunks) {
-    try {
-      const msg = await channel.send(chunk);
-      botMessageIds.push(msg.id);
-    } catch (e) {
-      console.error("[promo-codes] Не удалось отправить консолидированное сообщение:", e);
+  // Восстановить коды из существующего сообщения бота
+  promoSet = new Set<string>();
+  for (const msg of botMsgs) {
+    for (const line of msg.content.split(/\r?\n/)) {
+      const n = extractCode(line);
+      if (n) promoSet.add(n);
     }
   }
 
-  console.log(
-    `[promo-codes] Инициализация завершена. Кодов: ${promoSet.size}, сообщений бота: ${botMessageIds.length}.`
-  );
+  // Новые уникальные коды из сообщений пользователей
+  const newCodes: string[] = [];
+  for (const msg of userMsgs) {
+    const code = extractCode(msg.content);
+    if (code && !promoSet.has(code)) newCodes.push(code);
+  }
+
+  // Удалить только пользовательские сообщения
+  for (const msg of userMsgs) {
+    await safeDelete(msg);
+  }
+
+  if (newCodes.length === 0 && botMsgs.length > 0) {
+    // Сообщение бота актуально — просто запомнить его ID
+    botMessageIds = botMsgs.sort((a, b) => (a.id < b.id ? -1 : 1)).map(m => m.id);
+    console.log(`[promo-codes] Инициализация завершена. Кодов: ${promoSet.size}, сообщение бота без изменений.`);
+  } else {
+    // Есть новые коды или сообщения ещё нет — пересоздать
+    for (const code of newCodes) promoSet.add(code);
+    botMessageIds = botMsgs.map(m => m.id);
+    const chunks = buildChunks([...promoSet]);
+    await rebuildBotMessages(channel, chunks);
+    console.log(`[promo-codes] Инициализация завершена. Кодов: ${promoSet.size}, добавлено новых: ${newCodes.length}.`);
+  }
+
   isInitializing = false;
 }
 
