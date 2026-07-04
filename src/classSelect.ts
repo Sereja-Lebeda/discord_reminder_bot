@@ -47,7 +47,9 @@ function loadStatsMessageId(): string | null {
 
 export const CLASS_BUTTON_PREFIX = "class:" as const;
 
-const GUILD_FRIEND_ROLE_ID = process.env.GUILD_FRIEND_ROLE_ID?.trim() ?? "";
+function getGuildFriendRoleId(): string {
+  return process.env.GUILD_FRIEND_ROLE_ID?.trim() ?? "";
+}
 
 export type ClassKind = "tank" | "healer" | "damager";
 
@@ -558,8 +560,15 @@ export async function handleClassButton(
   const member = interaction.member as GuildMember;
 
   if (kind === "guild-friend") {
+    const friendRoleId = getGuildFriendRoleId();
+    if (!friendRoleId) {
+      await interaction.editReply({
+        content: "Роль Друга гильдии не настроена на боте. Обратись к модератору.",
+      });
+      return;
+    }
     try {
-      await member.roles.add(GUILD_FRIEND_ROLE_ID);
+      await member.roles.add(friendRoleId);
     } catch (e) {
       console.error("[class] Не удалось выдать роль Друга гильдии:", e);
       await interaction.editReply({
@@ -607,7 +616,11 @@ export async function handleClassMemberDisplayNameUpdate(
 
   // Классовая роль изменилась — синхронизируем лог (ник тоже актуальный)
   if (newClass !== oldClass && newClass !== undefined) {
-    await syncClassLogForMember(member, newClass, member.client);
+    // Пропускаем, если лог уже актуален — это гонка с applyClassForMember
+    const map = loadUserMessageMap();
+    if (map[member.id]?.classKind !== newClass) {
+      await syncClassLogForMember(member, newClass, member.client);
+    }
     return;
   }
 

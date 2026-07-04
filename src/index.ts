@@ -251,8 +251,7 @@ async function main(): Promise<void> {
     if (guildId && process.env.CLASS_LOG_CHANNEL_ID?.trim()) {
       try {
         const guild = await c.guilds.fetch(guildId);
-        // Члены уже в кеше после cleanupOrphanedWelcomePrompts — повторный fetch не нужен
-        await refreshClassStatsMessage(c, guild);
+        await refreshClassStatsMessageWithMemberSync(c, guild);
       } catch (e) {
         console.error("[class-stats] Не удалось обновить сводку при старте:", e);
       }

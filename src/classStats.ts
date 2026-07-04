@@ -177,16 +177,21 @@ export async function refreshClassStatsMessage(
 
 /**
  * Подгружает участников в кеш, чтобы счётчики ролей были полными (важно при старте).
+ * Пропускает fetch, если кеш уже заполнен (cleanup отработал раньше).
  */
 export async function refreshClassStatsMessageWithMemberSync(
   client: Client,
   guild: Guild,
 ): Promise<void> {
   if (statsModeFromEnv() !== "json") {
-    try {
-      await guild.members.fetch();
-    } catch (e) {
-      console.warn("[class-stats] guild.members.fetch пропущен или ошибка:", e);
+    const total = guild.memberCount ?? 0;
+    const cached = guild.members.cache.size;
+    if (total === 0 || cached < total * 0.9) {
+      try {
+        await guild.members.fetch();
+      } catch (e) {
+        console.warn("[class-stats] guild.members.fetch пропущен или ошибка:", e);
+      }
     }
   }
   await refreshClassStatsMessage(client, guild);
