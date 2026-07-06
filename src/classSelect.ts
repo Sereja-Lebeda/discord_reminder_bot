@@ -51,6 +51,9 @@ function getGuildFriendRoleId(): string {
   return process.env.GUILD_FRIEND_ROLE_ID?.trim() ?? "";
 }
 
+// Хранит userId пока applyClassForMember выполняется — блокирует параллельный sync из GuildMemberUpdate
+const classApplicationInProgress = new Set<string>();
+
 export type ClassKind = "tank" | "healer" | "damager";
 
 const LABELS: Record<ClassKind, string> = {
@@ -340,7 +343,13 @@ export async function deleteWelcomePromptMessage(
       await msg.delete();
     }
   } catch (e) {
-    console.error("[class] Не удалось удалить промпт в канале приветствия:", e);
+    const errCode =
+      e && typeof e === "object" && "code" in e
+        ? Number((e as { code: unknown }).code)
+        : NaN;
+    if (errCode !== 10008 && errCode !== 10003) {
+      console.error("[class] Не удалось удалить промпт в канале приветствия:", e);
+    }
   }
   clearWelcomePromptForUser(userId);
 }
@@ -405,51 +414,56 @@ export async function applyClassForMember(
   const protectedUser = memberHasProtectedRole(member);
   const allClassRoleIds = roleIdsFromEnv();
 
-  if (!protectedUser) {
-    try {
-      const toRemove = member.roles.cache.filter((r) =>
-        allClassRoleIds.includes(r.id),
-      );
-      if (toRemove.size > 0) {
-        await member.roles.remove(toRemove);
+  classApplicationInProgress.add(member.id);
+  try {
+    if (!protectedUser) {
+      try {
+        const toRemove = member.roles.cache.filter((r) =>
+          allClassRoleIds.includes(r.id),
+        );
+        if (toRemove.size > 0) {
+          await member.roles.remove(toRemove);
+        }
+        await member.roles.add(selectedRoleId);
+      } catch (e) {
+        console.error("[class] Не удалось выдать роли:", e);
+        return {
+          ok: false,
+          userMessage:
+            "Не удалось выдать роль. Проверь: роль бота выше Танк/Хиллер/Дамаггер, у бота есть «Управлять ролями».",
+        };
       }
-      await member.roles.add(selectedRoleId);
-    } catch (e) {
-      console.error("[class] Не удалось выдать роли:", e);
+    }
+
+    const line = buildLogLine(member, label);
+    const logCh = await client.channels.fetch(logChannelId);
+    if (!logCh?.isSendable()) {
       return {
         ok: false,
-        userMessage:
-          "Не удалось выдать роль. Проверь: роль бота выше Танк/Хиллер/Дамаггер, у бота есть «Управлять ролями».",
+        userMessage: "Канал лога недоступен для записи.",
       };
     }
-  }
 
-  const line = buildLogLine(member, label);
-  const logCh = await client.channels.fetch(logChannelId);
-  if (!logCh?.isSendable()) {
-    return {
-      ok: false,
-      userMessage: "Канал лога недоступен для записи.",
-    };
-  }
-
-  try {
-    await upsertClassLogMessage(client, member.id, line, kind, logCh);
-    if (options.deleteWelcomePrompt) {
-      await deleteWelcomePromptMessage(client, member.id);
-    }
     try {
-      await refreshClassStatsMessage(client, member.guild);
+      await upsertClassLogMessage(client, member.id, line, kind, logCh);
+      if (options.deleteWelcomePrompt) {
+        await deleteWelcomePromptMessage(client, member.id);
+      }
+      try {
+        await refreshClassStatsMessage(client, member.guild);
+      } catch (e) {
+        console.error("[class-stats] Не удалось обновить сводку:", e);
+      }
+      return { ok: true, label, protectedUser };
     } catch (e) {
-      console.error("[class-stats] Не удалось обновить сводку:", e);
+      console.error("[class] Ошибка лога:", e);
+      return {
+        ok: false,
+        userMessage: "Не удалось записать или обновить строку в логе.",
+      };
     }
-    return { ok: true, label, protectedUser };
-  } catch (e) {
-    console.error("[class] Ошибка лога:", e);
-    return {
-      ok: false,
-      userMessage: "Не удалось записать или обновить строку в логе.",
-    };
+  } finally {
+    classApplicationInProgress.delete(member.id);
   }
 }
 
@@ -616,9 +630,8 @@ export async function handleClassMemberDisplayNameUpdate(
 
   // Классовая роль изменилась — синхронизируем лог (ник тоже актуальный)
   if (newClass !== oldClass && newClass !== undefined) {
-    // Пропускаем, если лог уже актуален — это гонка с applyClassForMember
-    const map = loadUserMessageMap();
-    if (map[member.id]?.classKind !== newClass) {
+    // Пропускаем, если applyClassForMember уже обрабатывает этого участника
+    if (!classApplicationInProgress.has(member.id)) {
       await syncClassLogForMember(member, newClass, member.client);
     }
     return;
