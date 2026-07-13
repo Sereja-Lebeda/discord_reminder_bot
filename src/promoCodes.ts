@@ -78,29 +78,16 @@ async function safeDelete(msg: Message): Promise<void> {
   }
 }
 
-async function rebuildBotMessages(channel: SendableChannels, chunks: string[]): Promise<void> {
-  for (const id of botMessageIds) {
-    try {
-      const msg = await channel.messages.fetch(id);
-      await safeDelete(msg);
-    } catch (e: unknown) {
-      const code = getDiscordErrorCode(e);
-      if (code !== 10008 && code !== 10003) {
-        console.error("[promo-codes] Не удалось получить сообщение бота для удаления:", e);
-      }
-    }
-  }
-
-  const newIds: string[] = [];
+async function sendNewBatch(channel: SendableChannels, codes: string[]): Promise<void> {
+  const chunks = buildChunks(codes);
   for (const chunk of chunks) {
     try {
       const msg = await channel.send(chunk);
-      newIds.push(msg.id);
+      botMessageIds.push(msg.id);
     } catch (e) {
       console.error("[promo-codes] Не удалось отправить сообщение:", e);
     }
   }
-  botMessageIds = newIds;
 }
 
 export async function initPromoCodeChannel(client: Client): Promise<void> {
@@ -168,16 +155,13 @@ export async function initPromoCodeChannel(client: Client): Promise<void> {
     await safeDelete(msg);
   }
 
-  if (newCodes.length === 0 && botMsgs.length > 0) {
-    // Сообщение бота актуально — просто запомнить его ID
-    botMessageIds = botMsgs.sort((a, b) => (a.id < b.id ? -1 : 1)).map(m => m.id);
-    console.log(`[promo-codes] Инициализация завершена. Кодов: ${promoSet.size}, сообщение бота без изменений.`);
+  botMessageIds = botMsgs.sort((a, b) => (a.id < b.id ? -1 : 1)).map(m => m.id);
+
+  if (newCodes.length === 0) {
+    console.log(`[promo-codes] Инициализация завершена. Кодов: ${promoSet.size}, сообщения бота без изменений.`);
   } else {
-    // Есть новые коды или сообщения ещё нет — пересоздать
     for (const code of newCodes) promoSet.add(code);
-    botMessageIds = botMsgs.map(m => m.id);
-    const chunks = buildChunks([...promoSet]);
-    await rebuildBotMessages(channel, chunks);
+    await sendNewBatch(channel, newCodes);
     console.log(`[promo-codes] Инициализация завершена. Кодов: ${promoSet.size}, добавлено новых: ${newCodes.length}.`);
   }
 
@@ -204,6 +188,5 @@ export async function handlePromoMessage(message: Message): Promise<void> {
     return;
   }
 
-  const chunks = buildChunks([...promoSet]);
-  await rebuildBotMessages(channel, chunks);
+  await sendNewBatch(channel, [code]);
 }
