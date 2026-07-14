@@ -171,11 +171,12 @@ function startCronFromConfig(client: Client): void {
 
   // Опросы боссов: создание Пн 09:00, итоги Чт 12:05, очистка Вс 00:00
   const bossJobs: Array<[string, string, () => Promise<void>]> = [
-    ["boss-create",          "0 9 * * 1",  () => createBossPolls(client)],
-    ["boss-preread",         "55 11 * * 4", () => preReadBossPolls(client)],
-    ["boss-results",         "5 12 * * 4", () => publishBossResults(client)],
-    ["boss-cleanup",         "0 9 * * 0",  () => cleanupBossResults(client)],
-    ["class-prompt-cleanup", "0 3 * * *",  () => dailyWelcomePromptCleanup(client)],
+    ["boss-create",          "0 9 * * 1",   () => createBossPolls(client)],
+    ["boss-create-check",    "0 10 * * 1-3", () => runCreateIfOverdue(client)],
+    ["boss-preread",         "55 11 * * 4",  () => preReadBossPolls(client)],
+    ["boss-results",         "5 12 * * 4",   () => publishBossResults(client)],
+    ["boss-cleanup",         "0 9 * * 0",    () => cleanupBossResults(client)],
+    ["class-prompt-cleanup", "0 3 * * *",    () => dailyWelcomePromptCleanup(client)],
   ];
   for (const [id, cron, fn] of bossJobs) {
     const cj = new CronJob(cron, () => { void fn(); }, null, true, tz);
