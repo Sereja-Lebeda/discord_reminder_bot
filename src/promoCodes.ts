@@ -86,6 +86,7 @@ async function cleanupOldPromoMessages(channel: SendableChannels): Promise<void>
   for (const id of botMessageIds) {
     try {
       const msg = await channel.messages.fetch(id);
+      if (msg.pinned) { keepIds.push(id); continue; }
       if (msg.createdTimestamp < cutoff) {
         for (const line of msg.content.split(/\r?\n/)) {
           const code = extractCode(line);
