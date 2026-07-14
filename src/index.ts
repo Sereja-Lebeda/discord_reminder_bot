@@ -35,6 +35,7 @@ import {
   preReadBossPolls,
   publishBossResults,
   runCleanupIfOverdue,
+  runCreateIfOverdue,
 } from "./bossPolls.js";
 import { restorePendingDeletions } from "./pendingMessageDeletions.js";
 import { guildSlashCommands } from "./slashCommands.js";
@@ -243,6 +244,7 @@ async function main(): Promise<void> {
     await cleanupOrphanedWelcomePrompts(client);
     startCronFromConfig(client);
     await runCleanupIfOverdue(client);
+    await runCreateIfOverdue(client);
     await logPollResultMessages(client);
     await initPromoCodeChannel(client);
     await registerGuildSlashCommands(client);

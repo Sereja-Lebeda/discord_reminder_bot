@@ -390,3 +390,16 @@ export async function runCleanupIfOverdue(client: Client): Promise<void> {
     await cleanupBossResults(client);
   }
 }
+
+/** Создаёт опросы при старте бота, если cron пропустил понедельничное создание (пн–ср) */
+export async function runCreateIfOverdue(client: Client): Promise<void> {
+  const data = loadData();
+  if (data.thursdayPollMessageId) return;
+  // МСК = UTC+3
+  const mskDate = new Date(Date.now() + 3 * 3_600_000);
+  const day = mskDate.getUTCDay(); // 0=Вс, 1=Пн, 2=Вт, 3=Ср
+  if (day >= 1 && day <= 3) {
+    console.log("[boss-polls] Пропущенное создание опросов обнаружено при старте, запускаем...");
+    await createBossPolls(client);
+  }
+}
