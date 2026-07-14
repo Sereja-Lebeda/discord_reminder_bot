@@ -5,6 +5,7 @@ const OVERFLOW_HEADER = "📋 Промо-коды (продолжение):";
 const EMPTY_NOTICE    = "*(нет кодов)*";
 const MAX_LEN         = 2000;
 const MAX_BATCHES     = 15;
+const PROMO_MAX_AGE_DAYS = 30;
 
 let promoSet       = new Set<string>();
 let botMessageIds: string[] = [];
@@ -78,6 +79,35 @@ async function safeDelete(msg: Message): Promise<void> {
   }
 }
 
+async function cleanupOldPromoMessages(channel: SendableChannels): Promise<void> {
+  const cutoff = Date.now() - PROMO_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+  const keepIds: string[] = [];
+
+  for (const id of botMessageIds) {
+    try {
+      const msg = await channel.messages.fetch(id);
+      if (msg.createdTimestamp < cutoff) {
+        for (const line of msg.content.split(/\r?\n/)) {
+          const code = extractCode(line);
+          if (code) promoSet.delete(code);
+        }
+        await safeDelete(msg);
+        console.log(`[promo-codes] Удалено сообщение ${id} (старше ${PROMO_MAX_AGE_DAYS} дней)`);
+      } else {
+        keepIds.push(id);
+      }
+    } catch (e) {
+      const errCode = getDiscordErrorCode(e);
+      if (errCode !== 10008 && errCode !== 10003) {
+        console.error("[promo-codes] Ошибка при проверке сообщения:", e);
+        keepIds.push(id);
+      }
+    }
+  }
+
+  botMessageIds = keepIds;
+}
+
 async function sendNewBatch(channel: SendableChannels, codes: string[]): Promise<void> {
   const chunks = buildChunks(codes);
   for (const chunk of chunks) {
@@ -134,9 +164,21 @@ export async function initPromoCodeChannel(client: Client): Promise<void> {
   const botMsgs  = allMessages.filter(m => !m.pinned && m.author.id === botUserId);
   const userMsgs = allMessages.filter(m => !m.pinned && m.author.id !== botUserId);
 
-  // Восстановить коды из существующего сообщения бота
-  promoSet = new Set<string>();
+  // Разделить сообщения бота на свежие и устаревшие
+  const cutoff = Date.now() - PROMO_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+  const freshBotMsgs: Message[] = [];
   for (const msg of botMsgs) {
+    if (msg.createdTimestamp < cutoff) {
+      await safeDelete(msg);
+      console.log(`[promo-codes] Startup: удалено сообщение ${msg.id} (старше ${PROMO_MAX_AGE_DAYS} дней)`);
+    } else {
+      freshBotMsgs.push(msg);
+    }
+  }
+
+  // Восстановить коды только из свежих сообщений бота
+  promoSet = new Set<string>();
+  for (const msg of freshBotMsgs) {
     for (const line of msg.content.split(/\r?\n/)) {
       const n = extractCode(line);
       if (n) promoSet.add(n);
@@ -155,7 +197,7 @@ export async function initPromoCodeChannel(client: Client): Promise<void> {
     await safeDelete(msg);
   }
 
-  botMessageIds = botMsgs.sort((a, b) => (a.id < b.id ? -1 : 1)).map(m => m.id);
+  botMessageIds = freshBotMsgs.sort((a, b) => (a.id < b.id ? -1 : 1)).map(m => m.id);
 
   if (newCodes.length === 0) {
     console.log(`[promo-codes] Инициализация завершена. Кодов: ${promoSet.size}, сообщения бота без изменений.`);
@@ -189,4 +231,15 @@ export async function handlePromoMessage(message: Message): Promise<void> {
   }
 
   await sendNewBatch(channel, [code]);
+}
+
+export async function dailyPromoCleanup(client: Client): Promise<void> {
+  if (!promoChannelId) return;
+  try {
+    const ch = await client.channels.fetch(promoChannelId);
+    if (!ch?.isSendable()) return;
+    await cleanupOldPromoMessages(ch);
+  } catch (e) {
+    console.error("[promo-codes] Ошибка ежедневной очистки:", e);
+  }
 }

@@ -39,7 +39,7 @@ import {
 } from "./bossPolls.js";
 import { restorePendingDeletions } from "./pendingMessageDeletions.js";
 import { guildSlashCommands } from "./slashCommands.js";
-import { initPromoCodeChannel, handlePromoMessage } from "./promoCodes.js";
+import { initPromoCodeChannel, handlePromoMessage, dailyPromoCleanup } from "./promoCodes.js";
 
 dotenv.config();
 
@@ -177,6 +177,7 @@ function startCronFromConfig(client: Client): void {
     ["boss-results",         "5 12 * * 4",   () => publishBossResults(client)],
     ["boss-cleanup",         "0 9 * * 0",    () => cleanupBossResults(client)],
     ["class-prompt-cleanup", "0 3 * * *",    () => dailyWelcomePromptCleanup(client)],
+    ["promo-cleanup",        "0 4 * * *",    () => dailyPromoCleanup(client)],
   ];
   for (const [id, cron, fn] of bossJobs) {
     const cj = new CronJob(cron, () => { void fn(); }, null, true, tz);
