@@ -20,14 +20,14 @@ function getDiscordErrorCode(e: unknown): number {
 
 const CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
-function extractCode(raw: string): string {
+export function extractCode(raw: string): string {
   for (const token of raw.trim().split(/\s+/)) {
     if (CODE_PATTERN.test(token)) return token.toLowerCase();
   }
   return "";
 }
 
-function buildChunks(codes: string[]): string[] {
+export function buildChunks(codes: string[]): string[] {
   if (codes.length === 0) return [`${HEADER}\n${EMPTY_NOTICE}`];
 
   const chunks: string[] = [];
@@ -244,3 +244,21 @@ export async function dailyPromoCleanup(client: Client): Promise<void> {
     console.error("[promo-codes] Ошибка ежедневной очистки:", e);
   }
 }
+
+/** Хелперы для юнит-тестов — не использовать в production-коде */
+export const _forTesting = {
+  reset(): void {
+    promoSet = new Set();
+    botMessageIds = [];
+    promoChannelId = null;
+    isInitializing = false;
+  },
+  setChannelId(id: string): void { promoChannelId = id; },
+  setBotMessageIds(ids: string[]): void { botMessageIds = [...ids]; },
+  setPromoSet(codes: string[]): void { promoSet = new Set(codes); },
+  getBotMessageIds(): string[] { return [...botMessageIds]; },
+  getPromoSet(): Set<string> { return new Set(promoSet); },
+  async runCleanup(channel: SendableChannels): Promise<void> {
+    await cleanupOldPromoMessages(channel);
+  },
+};
