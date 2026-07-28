@@ -774,7 +774,10 @@ export async function dailyWelcomePromptCleanup(client: Client): Promise<void> {
   }
 }
 
-export async function autoAssignDefaultRole(client: Client): Promise<void> {
+export async function autoAssignDefaultRole(
+  client: Client,
+  prefetchedMembers?: Collection<string, GuildMember>,
+): Promise<void> {
   const defaultRoleId = process.env.CLASS_DEFAULT_ROLE_ID?.trim();
   if (!defaultRoleId) return;
 
@@ -791,12 +794,16 @@ export async function autoAssignDefaultRole(client: Client): Promise<void> {
     return;
   }
 
-  let members;
-  try {
-    members = await guild.members.fetch();
-  } catch (e) {
-    console.error("[class] autoAssign: не удалось получить участников:", e);
-    return;
+  let members: Collection<string, GuildMember>;
+  if (prefetchedMembers) {
+    members = prefetchedMembers;
+  } else {
+    try {
+      members = await guild.members.fetch();
+    } catch (e) {
+      console.error("[class] autoAssign: не удалось получить участников:", e);
+      return;
+    }
   }
 
   let assigned = 0;
@@ -822,7 +829,9 @@ export async function autoAssignDefaultRole(client: Client): Promise<void> {
   }
 }
 
-export async function cleanupOrphanedWelcomePrompts(client: Client): Promise<void> {
+export async function cleanupOrphanedWelcomePrompts(
+  client: Client,
+): Promise<Collection<string, GuildMember> | undefined> {
   if (!isClassFeatureEnabled()) return;
 
   // Шаг 1: сверяем роли участников с логом, синхронизируем расхождения
@@ -920,18 +929,20 @@ export async function cleanupOrphanedWelcomePrompts(client: Client): Promise<voi
   const promptMap = loadWelcomePromptMap();
   const classMap = loadUserMessageMap();
   const userIds = Object.keys(promptMap);
-  if (userIds.length === 0) return;
-  console.log(`[class] Cleanup: проверяю ${userIds.length} промпт(ов) приветствия...`);
-  for (const userId of userIds) {
-    if (classMap[userId]) {
-      await deleteWelcomePromptMessage(client, userId);
-      console.log(`[class] Cleanup: удалён мёртвый промпт для ${userId}`);
-    } else {
-      const member = fetchedMembers?.get(userId);
-      if (member && memberHasNonClassRole(member)) {
+  if (userIds.length > 0) {
+    console.log(`[class] Cleanup: проверяю ${userIds.length} промпт(ов) приветствия...`);
+    for (const userId of userIds) {
+      if (classMap[userId]) {
         await deleteWelcomePromptMessage(client, userId);
-        console.log(`[class] Cleanup: удалён промпт для ${userId} — есть не-классовая роль`);
+        console.log(`[class] Cleanup: удалён мёртвый промпт для ${userId}`);
+      } else {
+        const member = fetchedMembers?.get(userId);
+        if (member && memberHasNonClassRole(member)) {
+          await deleteWelcomePromptMessage(client, userId);
+          console.log(`[class] Cleanup: удалён промпт для ${userId} — есть не-классовая роль`);
+        }
       }
     }
   }
+  return fetchedMembers;
 }

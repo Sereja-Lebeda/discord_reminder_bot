@@ -245,8 +245,8 @@ async function main(): Promise<void> {
     console.log(`Бот запущен: ${c.user.tag}`);
     loadWelcomeMessageTemplate();
     restorePendingDeletions(client);
-    await cleanupOrphanedWelcomePrompts(client);
-    await autoAssignDefaultRole(client);
+    const prefetchedMembers = await cleanupOrphanedWelcomePrompts(client);
+    await autoAssignDefaultRole(client, prefetchedMembers);
     startCronFromConfig(client);
     await runCleanupIfOverdue(client);
     await runCreateIfOverdue(client);
