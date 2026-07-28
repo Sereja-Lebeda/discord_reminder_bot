@@ -22,7 +22,14 @@ Node.js 20+ · TypeScript · discord.js v14 · cron · dotenv
 ```bash
 cp .env.example .env   # заполнить переменные
 npm install
-npm run dev
+npm run dev            # режим разработки с авторестартом
+```
+
+## Продакшен
+
+```bash
+npm run build   # компилирует TypeScript из src/ → dist/
+npm start       # запускает dist/index.js
 ```
 
 Подробная инструкция по настройке всех функций: **[SETUP.md](SETUP.md)**
