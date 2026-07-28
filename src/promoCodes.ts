@@ -220,10 +220,15 @@ export async function handlePromoMessage(message: Message): Promise<void> {
 
   await safeDelete(message);
 
-  const code = extractCode(message.content);
-  if (!code || promoSet.has(code)) return;
-
-  promoSet.add(code);
+  const newCodes: string[] = [];
+  for (const line of message.content.split(/\r?\n/)) {
+    const code = extractCode(line);
+    if (code && !promoSet.has(code)) {
+      promoSet.add(code);
+      newCodes.push(code);
+    }
+  }
+  if (newCodes.length === 0) return;
 
   const channel = message.channel;
   if (!channel.isSendable()) {
@@ -231,7 +236,7 @@ export async function handlePromoMessage(message: Message): Promise<void> {
     return;
   }
 
-  await sendNewBatch(channel, [code]);
+  await sendNewBatch(channel, newCodes);
 }
 
 export async function dailyPromoCleanup(client: Client): Promise<void> {
