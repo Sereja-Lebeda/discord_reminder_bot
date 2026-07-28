@@ -88,8 +88,9 @@ function classKindFromMember(
 
 function memberHasNonClassRole(member: GuildMember | PartialGuildMember): boolean {
   const classRoleIds = new Set(roleIdsFromEnv());
+  const defaultRoleId = process.env.CLASS_DEFAULT_ROLE_ID?.trim();
   return member.roles.cache.some(
-    (r) => r.id !== member.guild.id && !classRoleIds.has(r.id),
+    (r) => r.id !== member.guild.id && !classRoleIds.has(r.id) && r.id !== defaultRoleId,
   );
 }
 
@@ -144,6 +145,8 @@ export type UserMessageEntry = {
   channelId: string;
   /** Для строки лога при смене ника, если игровые роли не выданы (например модераторы). */
   classKind?: ClassKind;
+  /** Unix ms — когда был отправлен промпт выбора класса (для авто-назначения дефолтной роли). */
+  joinedAt?: number;
 };
 
 function protectedRoleIdsFromEnv(): string[] {
@@ -308,6 +311,7 @@ export async function sendWelcomeClassPrompt(
   setWelcomePromptForUser(member.id, {
     messageId: msg.id,
     channelId: welcomeChannel.id,
+    joinedAt: Date.now(),
   });
   console.log(`[class] Промпт выбора класса для ${member.id} → ${msg.id}`);
 }
@@ -359,6 +363,10 @@ async function syncClassLogForMember(
   kind: ClassKind,
   client: Client,
 ): Promise<void> {
+  const defaultRoleId = process.env.CLASS_DEFAULT_ROLE_ID?.trim();
+  if (defaultRoleId && member.roles.cache.has(defaultRoleId)) {
+    await member.roles.remove(defaultRoleId).catch(() => null);
+  }
   const logChannelId = getLogChannelId();
   if (!logChannelId) return;
   const logCh = await client.channels.fetch(logChannelId);
@@ -418,6 +426,10 @@ export async function applyClassForMember(
   try {
     if (!protectedUser) {
       try {
+        const defaultRoleId = process.env.CLASS_DEFAULT_ROLE_ID?.trim();
+        if (defaultRoleId && member.roles.cache.has(defaultRoleId)) {
+          await member.roles.remove(defaultRoleId).catch(() => null);
+        }
         const toRemove = member.roles.cache.filter((r) =>
           allClassRoleIds.includes(r.id),
         );
@@ -583,6 +595,10 @@ export async function handleClassButton(
     }
     try {
       await member.roles.add(friendRoleId);
+      const defaultRoleId = process.env.CLASS_DEFAULT_ROLE_ID?.trim();
+      if (defaultRoleId && member.roles.cache.has(defaultRoleId)) {
+        await member.roles.remove(defaultRoleId).catch(() => null);
+      }
     } catch (e) {
       console.error("[class] Не удалось выдать роль Друга гильдии:", e);
       await interaction.editReply({
@@ -664,12 +680,25 @@ export async function handleClassMemberDisplayNameUpdate(
 export function registerClassMemberUpdate(client: Client): void {
   client.on(Events.GuildMemberUpdate, (oldM, newM) => {
     void handleClassMemberDisplayNameUpdate(oldM, newM);
-    if (newM.roles.cache.size > oldM.roles.cache.size && memberHasNonClassRole(newM)) {
-      const map = loadWelcomePromptMap();
-      if (map[newM.id]) {
-        void deleteWelcomePromptMessage(client, newM.id).then(() =>
-          console.log(`[class] Промпт удалён — у ${newM.id} выдана не-классовая роль`),
+    if (newM.roles.cache.size > oldM.roles.cache.size) {
+      const defaultRoleId = process.env.CLASS_DEFAULT_ROLE_ID?.trim();
+      if (defaultRoleId && newM.roles.cache.has(defaultRoleId)) {
+        const gainedNonDefault = newM.roles.cache.some(
+          (r) => !oldM.roles.cache.has(r.id) && r.id !== defaultRoleId && r.id !== newM.guild.id,
         );
+        if (gainedNonDefault) {
+          void newM.roles.remove(defaultRoleId).catch(() => null).then(() =>
+            console.log(`[class] Дефолтная роль снята у ${newM.id} — получена другая роль`),
+          );
+        }
+      }
+      if (memberHasNonClassRole(newM)) {
+        const map = loadWelcomePromptMap();
+        if (map[newM.id]) {
+          void deleteWelcomePromptMessage(client, newM.id).then(() =>
+            console.log(`[class] Промпт удалён — у ${newM.id} выдана не-классовая роль`),
+          );
+        }
       }
     }
   });
@@ -742,6 +771,54 @@ export async function dailyWelcomePromptCleanup(client: Client): Promise<void> {
     }
   } catch (e) {
     console.error("[class] Daily cleanup: ошибка:", e);
+  }
+}
+
+export async function autoAssignDefaultRole(client: Client): Promise<void> {
+  const defaultRoleId = process.env.CLASS_DEFAULT_ROLE_ID?.trim();
+  if (!defaultRoleId) return;
+
+  const hours = Number(process.env.CLASS_AUTO_ASSIGN_HOURS ?? 2);
+  const cutoff = Date.now() - hours * 3_600_000;
+
+  const guildId = process.env.GUILD_ID?.trim();
+  if (!guildId) return;
+
+  let guild;
+  try {
+    guild = await client.guilds.fetch(guildId);
+  } catch {
+    return;
+  }
+
+  let members;
+  try {
+    members = await guild.members.fetch();
+  } catch (e) {
+    console.error("[class] autoAssign: не удалось получить участников:", e);
+    return;
+  }
+
+  let assigned = 0;
+  for (const member of members.values()) {
+    if (member.user.bot) continue;
+    if (!member.joinedTimestamp || member.joinedTimestamp > cutoff) continue;
+    const hasRole = member.roles.cache.some(
+      (r) => r.id !== guild.id && r.id !== defaultRoleId,
+    );
+    if (hasRole) continue;
+    if (member.roles.cache.has(defaultRoleId)) continue;
+    try {
+      await member.roles.add(defaultRoleId);
+      assigned++;
+      console.log(`[class] Авто-назначена дефолтная роль для ${member.user.tag} (без роли > ${hours}ч)`);
+    } catch (e) {
+      console.error(`[class] Не удалось назначить дефолтную роль ${member.id}:`, e);
+    }
+  }
+
+  if (assigned > 0) {
+    console.log(`[class] autoAssign: назначено дефолтных ролей: ${assigned}`);
   }
 }
 
