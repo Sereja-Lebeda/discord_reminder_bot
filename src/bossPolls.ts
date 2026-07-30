@@ -274,7 +274,12 @@ export async function publishBossResults(client: Client): Promise<void> {
     ? `По решению большинства голосов, поход на босса в **__субботу__** - ${saturdayWinner}`
     : "Поход на босса в **__субботу__** отменяется, так как никто не хочет идти";
 
-  const resultsMsg = await ch.send({ content: [thursdayLine, saturdayLine].join("\n") });
+  let resultsMsg: Awaited<ReturnType<typeof ch.send>> | null = null;
+  try {
+    resultsMsg = await ch.send({ content: [thursdayLine, saturdayLine].join("\n") });
+  } catch (e) {
+    console.error("[boss-polls] Не удалось отправить итоговое сообщение:", e);
+  }
 
   // Удаляем poll-сообщения и системные PollResult-сообщения Discord (тип 46)
   for (const msgId of [data.thursdayPollMessageId, data.saturdayPollMessageId]) {
@@ -293,9 +298,13 @@ export async function publishBossResults(client: Client): Promise<void> {
     channelId: data.channelId,
     thursdayPollMessageId: data.thursdayPollMessageId,
     saturdayPollMessageId: data.saturdayPollMessageId,
-    resultsMessageId: resultsMsg.id,
+    resultsMessageId: resultsMsg?.id ?? null,
   });
-  console.log(`[boss-polls] Результаты опубликованы (${resultsMsg.id})`);
+  if (resultsMsg) {
+    console.log(`[boss-polls] Результаты опубликованы (${resultsMsg.id})`);
+  } else {
+    console.warn("[boss-polls] Результаты не опубликованы (ошибка сети), но опросы удалены");
+  }
 }
 
 /** Воскресенье 09:00 МСК — удаляет сообщение с результатами и poll-сообщения (если остались) */

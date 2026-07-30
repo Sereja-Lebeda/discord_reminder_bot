@@ -178,7 +178,7 @@ function startCronFromConfig(client: Client): void {
     ["boss-results",         "5 12 * * 4",   () => publishBossResults(client)],
     ["boss-cleanup",         "0 9 * * 0",    () => cleanupBossResults(client)],
     ["class-prompt-cleanup", "0 3 * * *",    () => dailyWelcomePromptCleanup(client)],
-    ["class-auto-assign",   "0 * * * *",    () => autoAssignDefaultRole(client)],
+    ["class-auto-assign",   "30 * * * *",   () => autoAssignDefaultRole(client)],
     ["promo-cleanup",        "0 4 * * *",    () => dailyPromoCleanup(client)],
   ];
   for (const [id, cron, fn] of bossJobs) {

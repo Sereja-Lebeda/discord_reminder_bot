@@ -761,12 +761,19 @@ export async function dailyWelcomePromptCleanup(client: Client): Promise<void> {
   console.log(`[class] Daily cleanup: проверяю ${userIds.length} промпт(ов)...`);
   try {
     const guild = await client.guilds.fetch(guildId);
-    const members = await guild.members.fetch();
     for (const userId of userIds) {
-      const member = members.get(userId);
-      if (member && memberHasNonClassRole(member)) {
-        await deleteWelcomePromptMessage(client, userId);
-        console.log(`[class] Daily cleanup: удалён промпт для ${userId} — есть не-классовая роль`);
+      try {
+        const member = await guild.members.fetch(userId);
+        if (memberHasNonClassRole(member)) {
+          await deleteWelcomePromptMessage(client, userId);
+          console.log(`[class] Daily cleanup: удалён промпт для ${userId} — есть не-классовая роль`);
+        }
+      } catch (e: unknown) {
+        const code = e && typeof e === "object" && "code" in e ? Number((e as { code: unknown }).code) : NaN;
+        if (code === 10007) {
+          await deleteWelcomePromptMessage(client, userId);
+          console.log(`[class] Daily cleanup: удалён промпт для ${userId} — участник покинул сервер`);
+        }
       }
     }
   } catch (e) {
