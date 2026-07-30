@@ -400,6 +400,27 @@ export async function runCleanupIfOverdue(client: Client): Promise<void> {
   }
 }
 
+/** Чистая функция — проверяет, нужно ли публиковать результаты по условию времени */
+export function isPublishOverdue(data: BossPollsData, nowMs = Date.now()): boolean {
+  if (!data.thursdayPollMessageId) return false;
+  if (data.resultsMessageId) return false;
+  const mskDate = new Date(nowMs + 3 * 3_600_000);
+  const day  = mskDate.getUTCDay();
+  const hour = mskDate.getUTCHours();
+  return (day === 4 && hour >= 12) || day === 5 || day === 6;
+}
+
+/**
+ * Публикует результаты при старте бота, если опросы завершились, а результаты не были опубликованы.
+ * Условие: есть ID опросов, нет resultsMessageId, текущее время — чт после 12:00 или пт–сб МСК.
+ */
+export async function runPublishIfOverdue(client: Client): Promise<void> {
+  const data = loadData();
+  if (!isPublishOverdue(data)) return;
+  console.log("[boss-polls] Обнаружены незавершённые опросы без результатов, запускаем публикацию...");
+  await publishBossResults(client);
+}
+
 /** Создаёт опросы при старте бота, если cron пропустил понедельничное создание (пн–ср) */
 export async function runCreateIfOverdue(client: Client): Promise<void> {
   const data = loadData();
