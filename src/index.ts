@@ -313,7 +313,6 @@ async function main(): Promise<void> {
   });
 
   client.on(Events.GuildMemberRemove, async (member) => {
-    if (isTestUser(member.id)) return;
     const leaveChannelId = process.env.LEAVE_LOG_CHANNEL_ID?.trim();
     if (!leaveChannelId) return;
     try {

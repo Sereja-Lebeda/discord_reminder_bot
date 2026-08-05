@@ -175,6 +175,13 @@ export async function refreshClassStatsMessage(
   console.log(`[class-stats] Сводка обновлена: ${msg.id}`);
 }
 
+/** Хелперы для юнит-тестов — не использовать в production-коде */
+export const _forTesting = {
+  buildStatsText,
+  statsModeFromEnv,
+  countByJsonFile,
+};
+
 /**
  * Подгружает участников в кеш, чтобы счётчики ролей были полными (важно при старте).
  * Пропускает fetch, если кеш уже заполнен (cleanup отработал раньше).

@@ -127,6 +127,11 @@ async function runDelete(
   }
 }
 
+/** Хелперы для юнит-тестов — не использовать в production-коде */
+export const _forTesting = {
+  resetTimers(): void { activeTimers.clear(); },
+};
+
 /**
  * Вызвать после `ClientReady`: восстановить таймеры и обработать просроченные удаления.
  */

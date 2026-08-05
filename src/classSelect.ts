@@ -962,3 +962,9 @@ export async function cleanupOrphanedWelcomePrompts(
   }
   return fetchedMembers;
 }
+
+/** Хелперы для юнит-тестов — не использовать в production-коде */
+export const _forTesting = {
+  parseClassButtonCustomId,
+  buildLogLine,
+};

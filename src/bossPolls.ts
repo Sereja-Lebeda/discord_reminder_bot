@@ -433,3 +433,9 @@ export async function runCreateIfOverdue(client: Client): Promise<void> {
     await createBossPolls(client);
   }
 }
+
+/** Хелперы для юнит-тестов — не использовать в production-коде */
+export const _forTesting = {
+  getWinners,
+  pollAnswersToEntries,
+};

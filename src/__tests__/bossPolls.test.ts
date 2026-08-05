@@ -4,7 +4,9 @@ import type { Client } from "discord.js";
 vi.mock("node:fs");
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { isPublishOverdue, publishBossResults } from "../bossPolls.js";
+import { isPublishOverdue, publishBossResults, runCleanupIfOverdue, runCreateIfOverdue, runPublishIfOverdue, _forTesting } from "../bossPolls.js";
+
+const { getWinners, pollAnswersToEntries } = _forTesting;
 
 // ── Вспомогательные функции ───────────────────────────────────────────────────
 
@@ -191,5 +193,239 @@ describe("publishBossResults", () => {
     );
     const client = makeClient({});
     await expect(publishBossResults(client)).resolves.toBeUndefined();
+  });
+});
+
+// ── getWinners ────────────────────────────────────────────────────────────────
+
+describe("getWinners", () => {
+  test("0 голосов → null", () => {
+    expect(getWinners([
+      { text: "19:00", voteCount: 0 },
+      { text: "21:00", voteCount: 0 },
+    ])).toBeNull();
+  });
+
+  test("один победитель", () => {
+    expect(getWinners([
+      { text: "19:00", voteCount: 5 },
+      { text: "21:00", voteCount: 2 },
+    ])).toBe("19:00");
+  });
+
+  test("ничья — оба победителя через ' и '", () => {
+    expect(getWinners([
+      { text: "19:00", voteCount: 3 },
+      { text: "21:00", voteCount: 3 },
+    ])).toBe("19:00 и 21:00");
+  });
+
+  test("пустой массив → null", () => {
+    expect(getWinners([])).toBeNull();
+  });
+});
+
+// ── pollAnswersToEntries ──────────────────────────────────────────────────────
+
+describe("pollAnswersToEntries", () => {
+  test("null → пустой массив", () => {
+    expect(pollAnswersToEntries(null)).toEqual([]);
+  });
+
+  test("undefined → пустой массив", () => {
+    expect(pollAnswersToEntries(undefined)).toEqual([]);
+  });
+
+  test("корректный список ответов", () => {
+    const answers = [
+      { text: "19:00", voteCount: 3 },
+      { text: "21:00", voteCount: 1 },
+    ];
+    const poll = {
+      answers: { forEach: (fn: (a: { text: string; voteCount: number }) => void) => answers.forEach(fn) },
+    };
+    expect(pollAnswersToEntries(poll)).toEqual([
+      { text: "19:00", voteCount: 3 },
+      { text: "21:00", voteCount: 1 },
+    ]);
+  });
+
+  test("null text → пустая строка", () => {
+    const answers = [{ text: null as unknown as string, voteCount: 2 }];
+    const poll = {
+      answers: { forEach: (fn: (a: { text: string | null; voteCount: number }) => void) => answers.forEach(fn) },
+    };
+    expect(pollAnswersToEntries(poll)).toEqual([{ text: "", voteCount: 2 }]);
+  });
+});
+
+// ── runCleanupIfOverdue ───────────────────────────────────────────────────────
+
+describe("runCleanupIfOverdue", () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.mocked(writeFileSync).mockClear(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function makeCleanupClient(): Client {
+    return {
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          isTextBased: () => true,
+          isSendable: () => true,
+          messages: { fetch: vi.fn().mockResolvedValue({ delete: vi.fn() }) },
+        }),
+      },
+    } as unknown as Client;
+  }
+
+  test("нет resultsMessageId → ранний выход, writeFileSync не вызывается", async () => {
+    vi.mocked(readFileSync).mockReturnValue(
+      JSON.stringify({ channelId: "ch1", thursdayPollMessageId: "p1", saturdayPollMessageId: "p2", resultsMessageId: null }),
+    );
+    const client = makeCleanupClient();
+    await runCleanupIfOverdue(client);
+    expect(vi.mocked(writeFileSync)).not.toHaveBeenCalled();
+  });
+
+  test("воскресенье МСК + есть resultsMessageId → запускает cleanup (writeFileSync вызывается)", async () => {
+    vi.mocked(readFileSync).mockReturnValue(
+      JSON.stringify({ channelId: "ch1", thursdayPollMessageId: "p1", saturdayPollMessageId: "p2", resultsMessageId: "res1" }),
+    );
+    // Воскресенье 10:00 МСК = UTC 07:00 → mskDate.getUTCDay() = 0
+    vi.setSystemTime(mskTime(0, 10));
+    const client = makeCleanupClient();
+    await runCleanupIfOverdue(client);
+    expect(vi.mocked(writeFileSync)).toHaveBeenCalled();
+    const saved = JSON.parse(vi.mocked(writeFileSync).mock.calls.at(-1)![1] as string);
+    expect(saved.resultsMessageId).toBeNull();
+  });
+
+  test("понедельник 08:59 МСК + есть resultsMessageId → запускает cleanup", async () => {
+    vi.mocked(readFileSync).mockReturnValue(
+      JSON.stringify({ channelId: "ch1", thursdayPollMessageId: "p1", saturdayPollMessageId: "p2", resultsMessageId: "res1" }),
+    );
+    vi.setSystemTime(mskTime(1, 8, 59));
+    const client = makeCleanupClient();
+    await runCleanupIfOverdue(client);
+    expect(vi.mocked(writeFileSync)).toHaveBeenCalled();
+  });
+
+  test("понедельник 09:00 МСК → НЕ запускает cleanup (cron уже отработал)", async () => {
+    vi.mocked(readFileSync).mockReturnValue(
+      JSON.stringify({ channelId: "ch1", thursdayPollMessageId: "p1", saturdayPollMessageId: "p2", resultsMessageId: "res1" }),
+    );
+    vi.setSystemTime(mskTime(1, 9, 0));
+    const client = makeCleanupClient();
+    await runCleanupIfOverdue(client);
+    expect(vi.mocked(writeFileSync)).not.toHaveBeenCalled();
+  });
+});
+
+// ── runCreateIfOverdue ────────────────────────────────────────────────────────
+
+describe("runCreateIfOverdue", () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.mocked(writeFileSync).mockClear(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function makeCreateClient(): Client {
+    return {
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          isSendable: () => true,
+          send: vi.fn().mockResolvedValue({ id: "new-poll-id" }),
+        }),
+      },
+    } as unknown as Client;
+  }
+
+  test("уже есть thursdayPollMessageId → ранний выход", async () => {
+    vi.mocked(readFileSync).mockReturnValue(
+      JSON.stringify({ channelId: "ch1", thursdayPollMessageId: "p1", saturdayPollMessageId: "p2", resultsMessageId: null }),
+    );
+    process.env.REMINDER_CHANNEL_ID = "ch1";
+    const client = makeCreateClient();
+    await runCreateIfOverdue(client);
+    expect(vi.mocked(writeFileSync)).not.toHaveBeenCalled();
+    delete process.env.REMINDER_CHANNEL_ID;
+  });
+
+  test("нет thursdayPollMessageId + вторник МСК → создаёт опросы", async () => {
+    vi.mocked(readFileSync).mockReturnValue(
+      JSON.stringify({ channelId: null, thursdayPollMessageId: null, saturdayPollMessageId: null, resultsMessageId: null }),
+    );
+    process.env.REMINDER_CHANNEL_ID = "ch1";
+    vi.setSystemTime(mskTime(2, 10)); // вторник 10:00 МСК
+    const client = makeCreateClient();
+    await runCreateIfOverdue(client);
+    expect(vi.mocked(writeFileSync)).toHaveBeenCalled();
+    delete process.env.REMINDER_CHANNEL_ID;
+  });
+
+  test("нет thursdayPollMessageId + четверг МСК → НЕ создаёт", async () => {
+    vi.mocked(readFileSync).mockReturnValue(
+      JSON.stringify({ channelId: null, thursdayPollMessageId: null, saturdayPollMessageId: null, resultsMessageId: null }),
+    );
+    process.env.REMINDER_CHANNEL_ID = "ch1";
+    vi.setSystemTime(mskTime(4, 10)); // четверг
+    const client = makeCreateClient();
+    await runCreateIfOverdue(client);
+    expect(vi.mocked(writeFileSync)).not.toHaveBeenCalled();
+    delete process.env.REMINDER_CHANNEL_ID;
+  });
+});
+
+// ── runPublishIfOverdue ───────────────────────────────────────────────────────
+
+describe("runPublishIfOverdue", () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.mocked(writeFileSync).mockClear(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  test("isPublishOverdue=false → ничего не делает", async () => {
+    // Понедельник — условие не выполнено
+    vi.setSystemTime(mskTime(1, 10));
+    vi.mocked(readFileSync).mockReturnValue(
+      JSON.stringify({ channelId: "ch1", thursdayPollMessageId: "p1", saturdayPollMessageId: "p2", resultsMessageId: null }),
+    );
+    const client = { channels: { fetch: vi.fn() } } as unknown as Client;
+    await runPublishIfOverdue(client);
+    expect(vi.mocked(client.channels.fetch)).not.toHaveBeenCalled();
+  });
+
+  test("isPublishOverdue=true → вызывает publishBossResults (writeFileSync вызывается)", async () => {
+    // Пятница — условие выполнено
+    vi.setSystemTime(mskTime(5, 10));
+    vi.mocked(readFileSync).mockReturnValue(
+      JSON.stringify({
+        channelId: "ch1",
+        thursdayPollMessageId: "p1",
+        saturdayPollMessageId: "p2",
+        resultsMessageId: null,
+        preRead: { thursdayWinnerText: "19:00", saturdayWinnerText: null, thursdayVoterLines: [], saturdayVoterLines: [] },
+      }),
+    );
+    const deleteMsg = vi.fn().mockResolvedValue(undefined);
+    const client = {
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          isSendable: () => true,
+          isTextBased: () => true,
+          id: "ch1",
+          send: vi.fn().mockResolvedValue({ id: "results-id" }),
+          messages: {
+            fetch: vi.fn().mockImplementation((opts: string | { limit?: number }) => {
+              if (typeof opts === "string") return Promise.resolve({ delete: deleteMsg });
+              return Promise.resolve({ find: () => undefined, size: 0 });
+            }),
+          },
+        }),
+      },
+    } as unknown as Client;
+
+    const promise = runPublishIfOverdue(client);
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(vi.mocked(writeFileSync)).toHaveBeenCalled();
+    const saved = JSON.parse(vi.mocked(writeFileSync).mock.calls.at(-1)![1] as string);
+    expect(saved.resultsMessageId).toBe("results-id");
   });
 });
