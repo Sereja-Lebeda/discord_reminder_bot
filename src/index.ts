@@ -21,6 +21,7 @@ import {
   handleClassButton,
   handleClassSlashCommand,
   isClassFeatureEnabled,
+  isTestUser,
   registerClassMemberUpdate,
   registerGuildMemberRemoveForClass,
   sendWelcomeClassPrompt,
@@ -289,6 +290,8 @@ async function main(): Promise<void> {
         return;
       }
 
+      if (isTestUser(member.id)) return;
+
       if (!welcomeMessageTemplate) {
         console.warn("[welcome] Шаблон пуст — проверь config/welcome.json.");
         return;
@@ -310,6 +313,7 @@ async function main(): Promise<void> {
   });
 
   client.on(Events.GuildMemberRemove, async (member) => {
+    if (isTestUser(member.id)) return;
     const leaveChannelId = process.env.LEAVE_LOG_CHANNEL_ID?.trim();
     if (!leaveChannelId) return;
     try {

@@ -168,6 +168,13 @@ function protectedUserIdsFromEnv(): string[] {
     .filter(Boolean);
 }
 
+/** Тестовые аккаунты (TEST_USER_IDS через запятую) — бот полностью их игнорирует. */
+export function isTestUser(userId: string): boolean {
+  const raw = process.env.TEST_USER_IDS?.trim();
+  if (!raw) return false;
+  return raw.split(",").some((s) => s.trim() === userId);
+}
+
 /**
  * Участник «защищён»: только строка в логе, игровые роли Танк/Хиллер/Дамаггер не трогаем.
  * — владелец сервера (ownerId, роль не нужна);
@@ -296,6 +303,7 @@ export async function sendWelcomeClassPrompt(
   welcomeChannel: SendableChannels,
 ): Promise<void> {
   if (!isClassFeatureEnabled()) return;
+  if (isTestUser(member.id)) return;
   if (memberHasNonClassRole(member)) {
     console.log(`[class] Промпт не отправлен — у ${member.id} уже есть не-классовая роль`);
     return;
@@ -816,6 +824,7 @@ export async function autoAssignDefaultRole(
   let assigned = 0;
   for (const member of members.values()) {
     if (member.user.bot) continue;
+    if (isTestUser(member.id)) continue;
     if (!member.joinedTimestamp || member.joinedTimestamp > cutoff) continue;
     const hasRole = member.roles.cache.some(
       (r) => r.id !== guild.id && r.id !== defaultRoleId,
