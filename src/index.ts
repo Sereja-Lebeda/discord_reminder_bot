@@ -309,6 +309,22 @@ async function main(): Promise<void> {
     }
   });
 
+  client.on(Events.GuildMemberRemove, async (member) => {
+    const leaveChannelId = process.env.LEAVE_LOG_CHANNEL_ID?.trim();
+    if (!leaveChannelId) return;
+    try {
+      const ch = await client.channels.fetch(leaveChannelId);
+      if (!ch?.isSendable()) return;
+      const displayName = member.displayName ?? member.user?.username ?? member.id;
+      await ch.send({
+        content: `👋 **${displayName}** покинул сервер. <@${member.id}>`,
+        allowedMentions: { users: [] },
+      });
+    } catch (e) {
+      console.error("[leave] Не удалось отправить уведомление о выходе:", e);
+    }
+  });
+
   client.on("interactionCreate", async (interaction) => {
     try {
       if (interaction.isButton()) {
