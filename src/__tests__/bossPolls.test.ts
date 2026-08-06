@@ -6,7 +6,7 @@ vi.mock("node:fs");
 import { readFileSync, writeFileSync } from "node:fs";
 import { isPublishOverdue, publishBossResults, runCleanupIfOverdue, runCreateIfOverdue, runPublishIfOverdue, _forTesting } from "../bossPolls.js";
 
-const { getWinners, pollAnswersToEntries } = _forTesting;
+const { getWinners, pollAnswersToEntries, cancelRetryTimer } = _forTesting;
 
 // ── Вспомогательные функции ───────────────────────────────────────────────────
 
@@ -94,6 +94,7 @@ describe("publishBossResults", () => {
   });
 
   afterEach(() => {
+    cancelRetryTimer();
     vi.useRealTimers();
     delete process.env.VOTERS_CHANNEL_ID;
   });
@@ -204,13 +205,144 @@ describe("publishBossResults", () => {
       },
     } as unknown as Client;
 
-    await publishBossResults(client);
+    const promise = publishBossResults(client);
+    // Проходим только через 2 задержки между ретраями (5с × 2 = 10с) —
+    // runAllTimersAsync нельзя: он запустил бы и 5-минутный фоновый таймер
+    await vi.advanceTimersByTimeAsync(15_000);
+    await promise;
+    _forTesting.cancelRetryTimer(); // чистим фоновый таймер после теста
 
     // poll-сообщения НЕ тронуты
     expect(deleteThursday).not.toHaveBeenCalled();
     expect(deleteSaturday).not.toHaveBeenCalled();
     // saveData не вызывался — preRead остаётся в JSON для следующей попытки
     expect(vi.mocked(writeFileSync)).not.toHaveBeenCalled();
+  });
+
+  test("voters.send падает 2 раза, 3-й успешен → poll удаляются", async () => {
+    mockData({
+      preRead: {
+        thursdayWinnerText: "19:00",
+        saturdayWinnerText: null,
+        thursdayVoterLines: ["**Четверг — 19:00:** <@123>"],
+        saturdayVoterLines: [],
+      },
+    });
+
+    const deleteThursday = vi.fn().mockResolvedValue(undefined);
+    const deleteSaturday = vi.fn().mockResolvedValue(undefined);
+
+    let votersSendAttempts = 0;
+    const votersChannel = {
+      isSendable: () => true,
+      send: vi.fn().mockImplementation(() => {
+        votersSendAttempts++;
+        if (votersSendAttempts < 3) return Promise.reject(new Error("ConnectTimeout"));
+        return Promise.resolve({});
+      }),
+    };
+    const mainChannel = {
+      isSendable: () => true,
+      isTextBased: () => true,
+      id: "chan1",
+      send: vi.fn().mockResolvedValue({ id: "results-id" }),
+      messages: {
+        fetch: vi.fn().mockImplementation((opts: string | { limit?: number }) => {
+          if (typeof opts === "string") {
+            return Promise.resolve({ delete: opts === "poll-thu" ? deleteThursday : deleteSaturday });
+          }
+          return Promise.resolve({ find: () => undefined, size: 0 });
+        }),
+      },
+    };
+
+    process.env.VOTERS_CHANNEL_ID = "voters-ch";
+    const client = {
+      channels: {
+        fetch: vi.fn().mockImplementation((id: string) => {
+          if (id === "voters-ch") return Promise.resolve(votersChannel);
+          return Promise.resolve(mainChannel);
+        }),
+      },
+    } as unknown as Client;
+
+    const promise = publishBossResults(client);
+    await vi.runAllTimersAsync();
+    await promise;
+
+    // 3 попытки были сделаны
+    expect(votersSendAttempts).toBe(3);
+    // После успеха — poll удаляются и результаты сохраняются
+    expect(deleteThursday).toHaveBeenCalled();
+    expect(deleteSaturday).toHaveBeenCalled();
+    const saved = JSON.parse(vi.mocked(writeFileSync).mock.calls.at(-1)![1] as string);
+    expect(saved.resultsMessageId).toBe("results-id");
+  });
+
+  test("voters падают все 3 раза → фоновый ретрай через 5 мин, poll не удаляются", async () => {
+    mockData({
+      preRead: {
+        thursdayWinnerText: "19:00",
+        saturdayWinnerText: null,
+        thursdayVoterLines: ["**Четверг — 19:00:** <@123>"],
+        saturdayVoterLines: [],
+      },
+    });
+
+    const deleteThursday = vi.fn().mockResolvedValue(undefined);
+    const votersChannel = {
+      isSendable: () => true,
+      send: vi.fn().mockRejectedValue(new Error("ConnectTimeout")),
+    };
+    const mainChannel = {
+      isSendable: () => true,
+      isTextBased: () => true,
+      id: "chan1",
+      send: vi.fn().mockResolvedValue({ id: "results-id" }),
+      messages: {
+        fetch: vi.fn().mockResolvedValue({ delete: deleteThursday }),
+      },
+    };
+
+    process.env.VOTERS_CHANNEL_ID = "voters-ch";
+    const client = {
+      channels: {
+        fetch: vi.fn().mockImplementation((id: string) => {
+          if (id === "voters-ch") return Promise.resolve(votersChannel);
+          return Promise.resolve(mainChannel);
+        }),
+      },
+    } as unknown as Client;
+
+    // Первый запуск — все ретраи исчерпаны
+    const firstRun = publishBossResults(client);
+    // Только задержки между ретраями (5с × 2 = 10с), фоновый 5-мин таймер НЕ трогаем
+    await vi.advanceTimersByTimeAsync(15_000);
+    await firstRun;
+
+    // Poll не тронуты, saveData не вызывался
+    expect(deleteThursday).not.toHaveBeenCalled();
+    expect(vi.mocked(writeFileSync)).not.toHaveBeenCalled();
+
+    // Фоновый таймер должен быть установлен
+    expect(_forTesting.hasRetryTimer()).toBe(true);
+
+    // Имитируем восстановление сети — voters теперь проходят
+    votersChannel.send = vi.fn().mockResolvedValue({});
+
+    // Отменяем фоновый таймер вручную (cancelRetryTimer сбрасывает флаг publishRetryTimer),
+    // чтобы второй вызов publishBossResults не видел уже активный таймер и не вернулся раньше времени.
+    // В продакшене его бы запустил сам фоновый setTimeout.
+    _forTesting.cancelRetryTimer();
+
+    // Симулируем то, что сделал бы фоновый таймер через 5 мин
+    const secondRun = publishBossResults(client);
+    await vi.runAllTimersAsync();
+    await secondRun;
+
+    // После успешного retry — poll удалены, результаты сохранены
+    expect(deleteThursday).toHaveBeenCalled();
+    expect(vi.mocked(writeFileSync)).toHaveBeenCalled();
   });
 
   test("ch.send успешен → результаты сохраняются с правильным ID", async () => {

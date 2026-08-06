@@ -7,6 +7,13 @@ const DATA_PATH = join(process.cwd(), "data", "boss-polls.json");
 /** Длительность опросов: Пн 09:00 → Чт 12:00 = 75 часов */
 const POLL_DURATION_HOURS = 75;
 
+const VOTERS_MAX_RETRIES = 3;
+const VOTERS_RETRY_DELAY_MS = 5_000;       // 5 сек между попытками
+const VOTERS_BACKGROUND_RETRY_MS = 5 * 60_000; // 5 мин после исчерпания ретраев
+
+/** Таймер фонового ретрая — только один может быть активен */
+let publishRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
 interface PreReadData {
   thursdayVoterLines: string[];
   saturdayVoterLines: string[];
@@ -248,19 +255,40 @@ export async function publishBossResults(client: Client): Promise<void> {
     }
   }
 
-  // Список проголосовавших → VOTERS_CHANNEL_ID (постоянное сообщение)
+  // Список проголосовавших → VOTERS_CHANNEL_ID
   if (allVoterLines.length > 0) {
     const votersChannelId = process.env.VOTERS_CHANNEL_ID?.trim();
     if (votersChannelId) {
-      try {
-        const votersCh = await client.channels.fetch(votersChannelId);
-        if (votersCh?.isSendable()) {
-          await votersCh.send({ content: allVoterLines.join("\n") });
-          console.log("[boss-polls] Список проголосовавших отправлен");
+      let votersSent = false;
+      for (let attempt = 1; attempt <= VOTERS_MAX_RETRIES; attempt++) {
+        try {
+          const votersCh = await client.channels.fetch(votersChannelId);
+          if (votersCh?.isSendable()) {
+            await votersCh.send({ content: allVoterLines.join("\n") });
+            console.log("[boss-polls] Список проголосовавших отправлен");
+            votersSent = true;
+          } else {
+            // Канал недоступен — конфигурационная проблема, не ретраим
+            console.warn(`[boss-polls] Канал ${votersChannelId} недоступен для отправки — пропускаем`);
+            votersSent = true;
+          }
+          break;
+        } catch (e) {
+          console.error(`[boss-polls] Попытка ${attempt}/${VOTERS_MAX_RETRIES} отправить voters:`, e);
+          if (attempt < VOTERS_MAX_RETRIES) {
+            console.warn(`[boss-polls] Повтор через ${VOTERS_RETRY_DELAY_MS / 1000} сек...`);
+            await new Promise(r => setTimeout(r, VOTERS_RETRY_DELAY_MS));
+          }
         }
-      } catch (e) {
-        console.error("[boss-polls] Не удалось отправить список проголосовавших:", e);
-        console.warn("[boss-polls] Poll-сообщения НЕ удалены — повторная попытка при следующем запуске");
+      }
+      if (!votersSent) {
+        if (publishRetryTimer === null) {
+          console.warn(`[boss-polls] Все ${VOTERS_MAX_RETRIES} попытки исчерпаны. Следующая через ${VOTERS_BACKGROUND_RETRY_MS / 60_000} мин...`);
+          publishRetryTimer = setTimeout(() => {
+            publishRetryTimer = null;
+            void publishBossResults(client);
+          }, VOTERS_BACKGROUND_RETRY_MS);
+        }
         return;
       }
     } else {
@@ -440,4 +468,13 @@ export async function runCreateIfOverdue(client: Client): Promise<void> {
 export const _forTesting = {
   getWinners,
   pollAnswersToEntries,
+  hasRetryTimer(): boolean {
+    return publishRetryTimer !== null;
+  },
+  cancelRetryTimer(): void {
+    if (publishRetryTimer !== null) {
+      clearTimeout(publishRetryTimer);
+      publishRetryTimer = null;
+    }
+  },
 };
