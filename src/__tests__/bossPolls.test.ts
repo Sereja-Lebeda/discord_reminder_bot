@@ -88,12 +88,14 @@ describe("isPublishOverdue", () => {
 
 describe("publishBossResults", () => {
   beforeEach(() => {
+    vi.mocked(writeFileSync).mockClear();
     vi.mocked(writeFileSync).mockImplementation(() => {});
     vi.useFakeTimers();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    delete process.env.VOTERS_CHANNEL_ID;
   });
 
   function makeChannel(sendImpl: () => Promise<unknown>) {
@@ -159,6 +161,56 @@ describe("publishBossResults", () => {
 
     const saved = JSON.parse(vi.mocked(writeFileSync).mock.calls.at(-1)![1] as string);
     expect(saved.resultsMessageId).toBeNull();
+  });
+
+  test("voters.send падает → опросы НЕ удаляются и saveData не вызывается", async () => {
+    mockData({
+      preRead: {
+        thursdayWinnerText: "19:00",
+        saturdayWinnerText: "18:00",
+        thursdayVoterLines: ["**Четверг — 19:00:** <@123>"],  // непустые → блок voters активен
+        saturdayVoterLines: [],
+      },
+    });
+
+    const deleteThursday = vi.fn().mockResolvedValue(undefined);
+    const deleteSaturday = vi.fn().mockResolvedValue(undefined);
+
+    const mainChannel = {
+      isSendable: () => true,
+      isTextBased: () => true,
+      id: "chan1",
+      send: vi.fn().mockResolvedValue({ id: "results-id" }),
+      messages: {
+        fetch: vi.fn().mockImplementation((opts: string) => {
+          if (opts === "poll-thu") return Promise.resolve({ delete: deleteThursday });
+          return Promise.resolve({ delete: deleteSaturday });
+        }),
+      },
+    };
+
+    const votersChannel = {
+      isSendable: () => true,
+      send: vi.fn().mockRejectedValue(new Error("ConnectTimeout")),
+    };
+
+    process.env.VOTERS_CHANNEL_ID = "voters-ch";
+    const client = {
+      channels: {
+        fetch: vi.fn().mockImplementation((id: string) => {
+          if (id === "voters-ch") return Promise.resolve(votersChannel);
+          return Promise.resolve(mainChannel);
+        }),
+      },
+    } as unknown as Client;
+
+    await publishBossResults(client);
+
+    // poll-сообщения НЕ тронуты
+    expect(deleteThursday).not.toHaveBeenCalled();
+    expect(deleteSaturday).not.toHaveBeenCalled();
+    // saveData не вызывался — preRead остаётся в JSON для следующей попытки
+    expect(vi.mocked(writeFileSync)).not.toHaveBeenCalled();
   });
 
   test("ch.send успешен → результаты сохраняются с правильным ID", async () => {

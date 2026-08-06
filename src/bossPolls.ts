@@ -260,6 +260,8 @@ export async function publishBossResults(client: Client): Promise<void> {
         }
       } catch (e) {
         console.error("[boss-polls] Не удалось отправить список проголосовавших:", e);
+        console.warn("[boss-polls] Poll-сообщения НЕ удалены — повторная попытка при следующем запуске");
+        return;
       }
     } else {
       console.warn("[boss-polls] VOTERS_CHANNEL_ID не задан — список проголосовавших не отправлен");
