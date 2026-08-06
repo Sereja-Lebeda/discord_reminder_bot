@@ -52,6 +52,11 @@ async function collectBotPollMessages(
   return found;
 }
 
+/** Хелперы для юнит-тестов — не использовать в production-коде */
+export const _forTesting = {
+  collectBotPollMessages,
+};
+
 export async function handleClearSurvey(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
